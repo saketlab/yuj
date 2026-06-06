@@ -1,0 +1,23 @@
+# Python word-count example.
+# Flow: yuj bootstrap → deploy → submit → status → pull
+fleet: fleet.csv
+job: wordcount
+remote_dir: yuj-run
+results_glob: ~/yuj-run/results/*.count
+stall_min: 15
+
+# Each line of urls.txt is one item; the watchdog calls the worker per item,
+# skipping any whose .count output already exists (resume-safe).
+work_command: python3 $HOME/yuj-run/worker.py
+input_file: urls.txt
+output_dir: results
+output_suffix: .count
+
+bootstrap:
+  env_manager: uv        # installs uv (no root) + a venv with requests
+  python: "3.12"
+  env_file: requirements.txt
+
+deploy:
+  code: [worker.py, urls.txt, requirements.txt]
+  payload: []

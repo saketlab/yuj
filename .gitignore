@@ -1,0 +1,48 @@
+# Byte-compiled / optimized
+__pycache__/
+*.py[cod]
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+
+# uv
+uv.lock
+
+# Test / coverage / type-check caches
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+
+# yuj secrets: NEVER commit fleet credentials
+fleet.csv
+*.creds
+.yuj-creds
+yuj.local.yaml
+# Generated worker fleet + private keys from `yuj provision`
+provisioned-fleet.csv
+.yuj/
+*_ed25519
+*_ed25519.pub
+
+# Built docs (mkdocs build output; published via the docs workflow)
+site/
+
+# Local Claude Code logs
+.claude/

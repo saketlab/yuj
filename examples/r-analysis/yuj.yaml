@@ -1,0 +1,21 @@
+# R analysis example, runs worker.R on each item in items.txt.
+# Flow: yuj bootstrap → deploy → submit → status → pull
+fleet: fleet.csv
+job: ranalysis
+remote_dir: yuj-run
+results_glob: ~/yuj-run/results/*.csv
+stall_min: 30
+
+work_command: Rscript $HOME/yuj-run/worker.R
+input_file: items.txt
+output_dir: results
+output_suffix: .csv
+
+bootstrap:
+  env_manager: micromamba          # installs R via conda-forge, no root needed
+  env_file: environment.yaml
+  extras: [R]                      # installs r-packages.txt into ~/.yuj-rlib
+
+deploy:
+  code: [worker.R, items.txt, r-packages.txt]
+  payload: []

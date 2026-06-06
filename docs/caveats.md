@@ -1,0 +1,55 @@
+# Caveats
+
+## Use SSH keys when you can
+
+If the host owner can add your public key to `~/.ssh/authorized_keys`, do that instead of using a password. Keys don't trigger fail2ban on failed auths, work without `sshpass`, and aren't logged anywhere.
+
+To use a key, set `key_path` in `fleet.csv`:
+
+```csv
+username,ip,name,password,key_path
+alice,10.0.0.1,lab-desk-1,,/home/alice/.ssh/id_ed25519
+```
+
+## fail2ban bans stick
+
+Repeated failed authentications will get your controller's IP banned from a host for hours, sometimes longer. yuj limits the damage by:
+
+- Defaulting `--max-workers 4` in bootstrap to keep concurrent probes low
+- Distinguishing auth failures from other problems (`yuj diagnose`)
+- Never retrying on an auth failure without you intervening
+
+Once you're banned, you can't un-ban yourself from outside. Wait it out or ask the host admin.
+
+## Keep fleet.csv out of version control
+
+Passwords go in there. yuj's `.gitignore` excludes `fleet.csv` and `*.creds` by default. Check before pushing, and don't paste `fleet.csv` contents into tickets or Slack.
+
+Passwords are passed to `sshpass` via the `SSHPASS` environment variable, never on the command line (where they'd show up in `ps` output).
+
+## These are someone else's machines
+
+`yuj status` shows `⚠` when someone is at the console. When that happens, stop the job or schedule a decommission:
+
+```bash
+yuj decommission lab-desk-1                         # now
+yuj decommission lab-desk-1 --at "8am tomorrow"     # polite
+```
+
+## Stall detection needs tuning
+
+The default `stall_min: 90` (90 minutes) suits long-running jobs that load big models. For faster workloads, lower it:
+
+```yaml
+stall_min: 5   # restart if no new output for 5 minutes
+```
+
+But make sure `grace_sec` is long enough to cover your startup time (default 2700 s = 45 min). Without sufficient grace, the watchdog will restart a warming-up job.
+
+## yuj is not a scheduler
+
+yuj doesn't do job queuing, resource limits, inter-job dependencies, or GPU isolation. It keeps a batch making progress across a set of unreliable machines. For queuing, resource limits, or GPU isolation, use Slurm or Kubernetes.
+
+## No host key verification by default
+
+yuj uses `StrictHostKeyChecking=no` and `UserKnownHostsFile=/dev/null` because borrowed lab desktops get reimaged frequently and their host keys change. This is fine for a trusted lab subnet. If you're connecting over the public internet, configure proper `known_hosts` and set `StrictHostKeyChecking=yes` in your SSH config.

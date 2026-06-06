@@ -1,0 +1,4 @@
+# Extra CRAN packages installed into ~/.yuj-rlib by the R bootstrap extra.
+# One package per line; lines starting with '#' are ignored.
+# Prefer conda-forge (environment.yaml) when possible, it's faster and binary.
+# janitor

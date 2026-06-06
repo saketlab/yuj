@@ -1,0 +1,2 @@
+# Python dependencies for the word-count worker.
+# stdlib only in this example, add your packages here.

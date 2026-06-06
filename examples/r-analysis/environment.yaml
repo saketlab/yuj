@@ -1,0 +1,9 @@
+# Conda/micromamba environment.
+# conda-forge has r-base and hundreds of r-* packages, no compiler, no root.
+# Add r-<pkgname> here when available; use r-packages.txt for CRAN-only extras.
+name: yuj-r
+channels: [conda-forge]
+dependencies:
+  - r-base>=4.3
+  - r-data.table           # fast I/O
+  - r-ggplot2              # plotting (remove if not needed)

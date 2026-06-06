@@ -1,0 +1,116 @@
+# Concepts
+
+## The run model
+
+A **batch** is a list of string items: accessions, sample IDs, URLs, filenames, anything. yuj splits the list across hosts, runs your command once per item, and checks completion by looking for the output file, never a job log.
+
+```
+batch = [item1, item2, …, itemN]
+
+per host:
+  for item in host_items:
+      if output_file_exists(item): skip
+      run: work_command  item
+```
+
+This works for shell scripts, Python, R, Julia, or any compiled binary callable from a command line.
+
+!!! warning "yuj only fits embarrassingly parallel work"
+    Each item runs on its own, on one host, with no communication between items and no shared memory. yuj never moves data between hosts mid-run. If your work needs nodes to exchange state while it runs (MPI, a shared address space, a distributed reduction, or a job where item B depends on item A's in-memory result), yuj is the wrong tool. Split the batch into independent items, or use a real cluster scheduler.
+
+## Resume by output file
+
+When a worker crashes mid-write, the only reliable way to know an item is done is to check whether the output file exists. yuj uses this exclusively, not a job log or database. In practice:
+
+- A worker that crashes halfway through writing an item leaves no output file and gets retried on the next watchdog restart.
+- Two hosts can process the same item; whichever finishes last wins. Safe because `yuj pull` merges into a single directory.
+- Changing `output_suffix` changes what yuj considers done. Don't change it mid-run.
+
+## The watchdog chain
+
+```
+cron (every 15 min)
+  └─ ensure.sh   → is the watchdog running?
+                      yes → exit 0
+                      no  → launch watchdog (setsid + &)
+
+watchdog.sh  (runs continuously)
+  ├─ every INTERVAL seconds: is the run-loop alive?
+  │     dead → relaunch
+  │     alive but newest output > STALL_MIN min old → kill + relaunch
+  │     alive, recent output → log "ok"
+  └─ exits when stop sentinel exists
+
+run-loop.sh
+  └─ for item in items.txt:
+         if output exists: skip
+         work_command item
+```
+
+Because supervision lives in cron on the remote host, a controller reboot doesn't touch running jobs. Hosts keep going. The controller reconnects with `yuj pull` and picks up where results left off.
+
+## Isolation from production
+
+When multiple jobs run on the same host, yuj uses the **job name** to make every artifact unique:
+
+| Artifact | Pattern |
+|----------|---------|
+| Scripts | `~/<remote_dir>/<job>.yuj-run.sh`, `<job>.yuj-watchdog.sh`, `<job>.yuj-ensure.sh` |
+| Cron entry | contains `<job>.yuj-ensure.sh` |
+| Stop sentinel | `/tmp/<job>.yuj.stop` |
+| Results | controlled by `results_glob` in `yuj.yaml` |
+
+`yuj decommission` kills processes and removes the cron entry by matching the job-unique script names. It cannot touch a production job running beside it.
+
+## Weighted distribution
+
+Hosts differ in capacity. yuj uses the **largest-remainder (Hamilton) method** to split items proportionally to per-host weights, so item counts sum exactly to the batch size with none lost.
+
+```csv
+# fleet.csv
+username,ip,name,password,weight
+alice,10.0.0.1,gpu-rig,p,4     # 4× weight → gets 4× more items
+alice,10.0.0.2,laptop,p,1
+```
+
+## do_not_use
+
+Mark decommissioned or off-limits hosts with `do_not_use: true`:
+
+```csv
+username,ip,name,password,do_not_use
+alice,10.0.0.3,old-box,p,true
+```
+
+- `yuj deploy` (default: all hosts) silently skips them.
+- `yuj deploy --hosts old-box` (explicit) refuses with a non-zero exit.
+
+## Provisioning (the one privileged step)
+
+Everything else in yuj runs as an ordinary user, but *creating* that user needs
+root. `yuj provision` is the optional first step for when you have an admin login
+that can `sudo` but no dedicated worker account yet:
+
+```bash
+yuj provision --fleet admin.csv --user yuj
+```
+
+It connects as the admin, and via `sudo`:
+
+1. creates the worker user (`useradd -m`) if absent,
+2. installs a yuj-generated SSH public key in the user's `authorized_keys`,
+3. locks the account's password, so only the key works.
+
+One ed25519 keypair is generated on the controller for the whole fleet; the
+private half stays under `.yuj/keys/` (gitignored) and a `provisioned-fleet.csv`
+points each host's `key_path` at it. The admin's sudo password rides SSH stdin
+(`sudo -S`), never a command line. Because the new account is key-only, it never
+trips fail2ban, the same reason the rest of yuj prefers keys.
+
+## Politeness
+
+yuj runs on machines that belong to other people:
+
+- `yuj status` shows an owner-present warning when someone is logged into the console (detected via `who`).
+- `yuj decommission --at "9am tomorrow"` schedules a teardown so you hand machines back at a set time.
+- `--max-workers 4` in bootstrap limits concurrent SSH probes to avoid tripping subnet-level IDS rules.
