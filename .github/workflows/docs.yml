@@ -17,8 +17,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv python install 3.12
-      - run: uv sync
-      - run: uv pip install --system ".[docs]"
-      - run: mkdocs build --strict
+      - run: uv sync --extra docs
+      - run: uv run mkdocs build --strict
       - name: Deploy to GitHub Pages
-        run: mkdocs gh-deploy --force
+        run: uv run mkdocs gh-deploy --force
