@@ -1,14 +1,14 @@
 # yuj
 
 [![CI](https://github.com/saketlab/yuj/actions/workflows/ci.yml/badge.svg)](https://github.com/saketlab/yuj/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-mkdocs--material-blue)](https://saketlab.github.io/yuj)
-[![PyPI](https://img.shields.io/badge/pypi-0.1.0.dev0-orange)](https://pypi.org/project/yuj/)
+[![Docs](https://img.shields.io/badge/docs-Sphinx-blue)](https://yuj.saketlab.org)
+[![PyPI](https://img.shields.io/pypi/v/yuj.svg)](https://pypi.org/project/yuj/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 
-📖 **[Full documentation →](https://saketlab.github.io/yuj)**
+**[Full documentation →](https://yuj.saketlab.org)**
 
-`yuj` scatters a batch across 'borrowed lab desktops' over SSH and pulls results back, with a self-healing watchdog on each host. 
+`yuj` scatters work across idle lab desktops over SSH and pulls the results back. A self-healing watchdog on each host keeps the batch running through crashes and reboots, so you don't need root on the machines or a scheduler watching over them.
 
 
 If you have a 'batch of jobs' that can be split into independent items, you can use yuj to achieve effective and fast parallelisation. Each item runs on one host on its own, with no communication between items and no shared memory. 
@@ -43,7 +43,7 @@ yuj status --watch 30
 yuj pull --loop 60
 ```
 
-See the [full quickstart](https://saketlab.github.io/yuj/quickstart/) and [R users guide](https://saketlab.github.io/yuj/r-users/) in the docs.
+See the [full quickstart](https://yuj.saketlab.org/quickstart/) and [R users guide](https://yuj.saketlab.org/r-users/) in the docs.
 
 ## How it works
 
@@ -64,7 +64,7 @@ See the [full quickstart](https://saketlab.github.io/yuj/quickstart/) and [R use
 ## Development
 
 ```bash
-uv sync                       # create the venv and install dev deps
+uv sync --locked              # create the venv and install dev deps
 uv run pytest                 # tests
 uv run ruff check .           # lint
 uv run ruff format .          # format

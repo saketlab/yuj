@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from yuj import probe as probe_module
 from yuj._shell import CommandResult
 from yuj.exceptions import AuthError, CommandTimeout
 from yuj.fleet import Fleet, Host
 from yuj.probe import classify_host, diagnose_fleet
+from yuj.transport import SSHTransport
 
 HOST = Host(name="h", ip="10.0.0.1", user="u", password="p")
 
@@ -19,7 +19,7 @@ def _patch_run(monkeypatch: pytest.MonkeyPatch, result=None, exc=None):  # type:
             raise exc
         return result
 
-    monkeypatch.setattr(probe_module.SSHTransport, "run", fake)
+    monkeypatch.setattr(SSHTransport, "run", fake)
 
 
 class TestClassify:

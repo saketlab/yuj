@@ -56,6 +56,10 @@ class TestConfig:
         assert cfg.env_manager == "uv"
         assert cfg.python == "3.12"
 
+    def test_unsafe_remote_dir_raises(self) -> None:
+        with pytest.raises(YujError, match="unsafe remote_dir"):
+            BootstrapConfig(remote_dir='x"; rm -rf /')
+
 
 class TestRecipes:
     def test_available_extras(self) -> None:
@@ -76,7 +80,7 @@ class TestScript:
         script = build_bootstrap_script(BootstrapConfig(env_manager="uv"))
         assert "astral.sh/uv/install.sh" in script
         assert ".yuj-bootstrap-marker" in script
-        assert "ALREADY-BOOTSTRAPPED" in script  # idempotency guard
+        assert "ALREADY-BOOTSTRAPPED" in script
 
     def test_check_mode_installs_nothing(self) -> None:
         script = build_bootstrap_script(BootstrapConfig(env_manager="uv", check=True))
@@ -101,7 +105,6 @@ class TestScript:
         script = build_bootstrap_script(
             BootstrapConfig(env_manager="uv", from_tarball="$HOME/cache/uv.tar.gz")
         )
-        # Double-quoted (so $HOME expands), not single-quoted.
         assert 'tar -xf "$HOME/cache/uv.tar.gz"' in script
 
     @pytest.mark.skipif(_shellcheck is None, reason="shellcheck not installed")

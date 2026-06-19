@@ -6,40 +6,91 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13"]
+        python-version: ["3.12", "3.13", "3.14"]
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v7.0.0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
+          version: "0.9.12"
 
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --python ${{ matrix.python-version }}
+        run: uv sync --locked --python ${{ matrix.python-version }}
 
       - name: Lint
-        run: uv run ruff check .
+        run: uv run --frozen ruff check .
 
       - name: Format check
-        run: uv run ruff format --check .
+        run: uv run --frozen ruff format --check .
 
       - name: Type check
-        run: uv run mypy src
+        run: uv run --frozen mypy src
 
       - name: Test
-        run: uv run pytest --cov=yuj --cov-report=xml --cov-report=term-missing
+        run: uv run --frozen pytest --cov=yuj --cov-report=xml --cov-report=term-missing
+
+  docs:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7.0.0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+          version: "0.9.12"
+
+      - name: Set up Python
+        run: uv python install 3.14
+
+      - name: Install docs dependencies
+        run: uv sync --locked --python 3.14 --extra docs
+
+      - name: Build docs
+        run: uv run --frozen sphinx-build -W --keep-going -b html -d /tmp/doctrees docs site
+
+  package:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7.0.0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+          version: "0.9.12"
+
+      - name: Set up Python
+        run: uv python install 3.14
+
+      - name: Build package
+        run: uv build
+
+      - name: Smoke-test wheel
+        run: |
+          python -m venv .pkg-smoke
+          .pkg-smoke/bin/python -m pip install dist/*.whl
+          .pkg-smoke/bin/yuj --help
+          .pkg-smoke/bin/python -c "from importlib import resources; import yuj; assert (resources.files('yuj') / 'templates' / 'watchdog.sh.j2').is_file(); assert yuj.__version__"

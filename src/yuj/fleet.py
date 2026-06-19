@@ -12,6 +12,7 @@ from typing import Any
 import yaml
 
 from yuj.exceptions import FleetError
+from yuj.window import Window
 
 
 @dataclass(frozen=True)
@@ -20,7 +21,9 @@ class Host:
 
     Exactly one auth method is expected: a ``key_path`` (preferred) or a
     ``password``. ``weight`` scales how much work this host receives relative to
-    its peers (a 96 GB GPU box might be weighted higher than an 8 GB one).
+    its peers (a 96 GB GPU box might be weighted higher than an 8 GB one). Set
+    ``strict_host_key`` for internet-facing hosts where known_hosts verification
+    should be enforced instead of the default lab-subnet trust model.
     """
 
     name: str
@@ -31,6 +34,10 @@ class Host:
     key_path: str | None = None
     weight: float = 1.0
     do_not_use: bool = False
+    window: str | None = None
+    local: bool = False
+    strict_host_key: bool = False
+    known_hosts_file: str | None = None
 
     def __post_init__(self) -> None:
         if self.weight < 0:
@@ -40,6 +47,16 @@ class Host:
             )
         if self.port <= 0 or self.port > 65535:
             raise FleetError(f"host {self.name!r} has invalid port {self.port}")
+        if self.window:
+            Window.parse(self.window)  # validate per-host window format early
+
+    @property
+    def is_local(self) -> bool:
+        """True when this host runs on the controller itself (no SSH).
+
+        Either flagged ``local`` in the fleet, or addressed as loopback.
+        """
+        return self.local or self.ip in {"localhost", "127.0.0.1", "::1"}
 
     @property
     def auth_kind(self) -> str:
@@ -62,7 +79,10 @@ class Host:
         return (
             f"Host(name={self.name!r}, ip={self.ip!r}, user={self.user!r}, "
             f"port={self.port}, password={secret!r}, key_path={self.key_path!r}, "
-            f"weight={self.weight}, do_not_use={self.do_not_use})"
+            f"weight={self.weight}, do_not_use={self.do_not_use}, "
+            f"window={self.window!r}, local={self.local}, "
+            f"strict_host_key={self.strict_host_key}, "
+            f"known_hosts_file={self.known_hosts_file!r})"
         )
 
 
@@ -135,8 +155,8 @@ def load_from_csv(path: str | Path) -> Fleet:
 
     Required columns: a user column (``username`` or ``user``), an address column
     (``ip`` or ``host``), and a name column (``name`` or ``machine``). Optional:
-    ``password``, ``key_path``, ``weight``, ``port``. Blank lines and rows whose
-    name is empty are skipped.
+    ``password``, ``key_path``, ``weight``, ``port``, ``strict_host_key``, and
+    ``known_hosts_file``. Blank lines and rows whose name is empty are skipped.
     """
     path = Path(path)
     if not path.is_file():
@@ -192,6 +212,9 @@ def load_from_yaml(path: str | Path) -> Fleet:
         "port": data.get("port", 22),
         "key_path": data.get("key_path"),
         "weight": data.get("weight", 1.0),
+        "window": data.get("window"),
+        "strict_host_key": data.get("strict_host_key", False),
+        "known_hosts_file": data.get("known_hosts_file"),
     }
     machines = data.get("machines") or []
     if not isinstance(machines, list):
@@ -219,6 +242,14 @@ def load_from_yaml(path: str | Path) -> Fleet:
                 key_path=entry.get("key_path", defaults["key_path"]),
                 weight=float(entry.get("weight", defaults["weight"])),
                 do_not_use=_truthy(entry.get("do_not_use")),
+                window=entry.get("window", defaults["window"]),
+                local=_truthy(entry.get("local")),
+                strict_host_key=_truthy(
+                    entry.get("strict_host_key", defaults["strict_host_key"])
+                ),
+                known_hosts_file=entry.get(
+                    "known_hosts_file", defaults["known_hosts_file"]
+                ),
             )
         )
     if not hosts:
@@ -269,6 +300,10 @@ def _row_to_host(
         key_path=row.get("key_path") or None,
         weight=weight,
         do_not_use=_truthy(row.get("do_not_use")),
+        window=row.get("window") or None,
+        local=_truthy(row.get("local")),
+        strict_host_key=_truthy(row.get("strict_host_key")),
+        known_hosts_file=row.get("known_hosts_file") or None,
     )
 
 

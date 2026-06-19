@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from rich.table import Table
 from rich.text import Text
 
-from yuj.probe import DEFAULT_STALL_MIN, Diagnosis, HostStatus
+from yuj.status import DEFAULT_STALL_MIN, Diagnosis, HostStatus
 
 _DIAGNOSIS_STYLE = {
     "ok": ("✓ ok", "bold green"),

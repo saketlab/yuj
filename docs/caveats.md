@@ -50,6 +50,15 @@ But make sure `grace_sec` is long enough to cover your startup time (default 270
 
 yuj doesn't do job queuing, resource limits, inter-job dependencies, or GPU isolation. It keeps a batch making progress across a set of unreliable machines. For queuing, resource limits, or GPU isolation, use Slurm or Kubernetes.
 
-## No host key verification by default
+## Host key verification
 
-yuj uses `StrictHostKeyChecking=no` and `UserKnownHostsFile=/dev/null` because borrowed lab desktops get reimaged frequently and their host keys change. This is fine for a trusted lab subnet. If you're connecting over the public internet, configure proper `known_hosts` and set `StrictHostKeyChecking=yes` in your SSH config.
+yuj defaults to `StrictHostKeyChecking=no` and `UserKnownHostsFile=/dev/null` because borrowed lab desktops get reimaged frequently and their host keys change.
+
+For public internet or less-trusted networks, opt into strict verification per host:
+
+```csv
+username,ip,name,key_path,strict_host_key,known_hosts_file
+alice,203.0.113.10,cloud-box,/home/alice/.ssh/id_ed25519,true,/home/alice/.ssh/known_hosts
+```
+
+In `fleet.yaml`, set `strict_host_key: true` and optionally `known_hosts_file` at the top level or per machine.

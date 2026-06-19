@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import shlex
 from dataclasses import dataclass
 from importlib import resources
@@ -10,7 +9,8 @@ from pathlib import Path
 
 from yuj.exceptions import YujError
 from yuj.fleet import Fleet, map_fleet
-from yuj.transport import SSHTransport
+from yuj.shell_safety import validate_remote_path
+from yuj.transport import Transport, make_transport
 
 
 @dataclass(frozen=True)
@@ -22,7 +22,6 @@ class _ManagerSpec:
     bindir: str
 
 
-# One-file installers, exactly as documented in TESTING.md.
 ENV_MANAGERS: dict[str, _ManagerSpec] = {
     "uv": _ManagerSpec(
         check="uv --version",
@@ -56,10 +55,6 @@ MARKER_NAME = ".yuj-bootstrap-marker"
 DEFAULT_BOOTSTRAP_TIMEOUT = 1800.0
 DEFAULT_MAX_WORKERS = 4
 
-# A tarball path is operator config spliced into the remote shell (in double
-# quotes, so $HOME/~ expand). Permit path + shell-variable characters only.
-_SAFE_REMOTE_PATH = re.compile(r"^[\w@%+=:,./~${}*?-]+$")
-
 
 @dataclass(frozen=True)
 class BootstrapConfig:
@@ -91,6 +86,9 @@ class BootstrapConfig:
                 f"unknown env manager {self.env_manager!r}",
                 hint=f"choose one of: {', '.join(ENV_MANAGERS)}",
             )
+        validate_remote_path(self.remote_dir, label="remote_dir")
+        if self.from_tarball:
+            validate_remote_path(self.from_tarball, label="--from-tarball path")
 
 
 @dataclass(frozen=True)
@@ -141,12 +139,8 @@ def build_bootstrap_script(cfg: BootstrapConfig) -> str:
     )
     tarball = ""
     if cfg.from_tarball and not cfg.check:
-        if not _SAFE_REMOTE_PATH.match(cfg.from_tarball):
-            raise YujError(
-                f"unsafe --from-tarball path: {cfg.from_tarball!r}",
-                hint="use only path/variable characters (no spaces or shell metas)",
-            )
-        # Double-quoted so $HOME/~ expand on the remote but word-splitting can't.
+        validate_remote_path(cfg.from_tarball, label="--from-tarball path")
+        # Double quotes allow $HOME expansion without word splitting.
         tarball = (
             f'if [ -f "{cfg.from_tarball}" ]; then '
             f'echo "extracting {cfg.from_tarball}"; '
@@ -176,7 +170,7 @@ def build_bootstrap_script(cfg: BootstrapConfig) -> str:
 
 
 def bootstrap(
-    transport: SSHTransport,
+    transport: Transport,
     cfg: BootstrapConfig,
     *,
     timeout: float = DEFAULT_BOOTSTRAP_TIMEOUT,
@@ -224,7 +218,7 @@ def bootstrap_fleet(
     results = map_fleet(
         fleet,
         lambda host: bootstrap(
-            SSHTransport(host, connect_timeout=connect_timeout),
+            make_transport(host, connect_timeout=connect_timeout),
             cfg,
             timeout=timeout,
         ),
@@ -237,7 +231,7 @@ def bootstrap_fleet(
     return results
 
 
-def _detect_os(transport: SSHTransport, *, timeout: float) -> str | None:
+def _detect_os(transport: Transport, *, timeout: float) -> str | None:
     """Return the host's PRETTY_NAME (distro) or None."""
     result = transport.run(
         ". /etc/os-release 2>/dev/null; echo $PRETTY_NAME", timeout=timeout
@@ -261,7 +255,6 @@ def _env_materialize(cfg: BootstrapConfig) -> str:
         return venv
     if cfg.env_manager == "pixi" and cfg.env_file:
         return "pixi install"
-    # micromamba / conda with an env file
     if cfg.env_file and cfg.env_file.endswith((".yaml", ".yml")):
         ef = shlex.quote(cfg.env_file)
         return f"{cfg.env_manager} env create -y -f {ef} || true"
@@ -279,14 +272,10 @@ def _env_sh_body(cfg: BootstrapConfig, spec: _ManagerSpec) -> str:
         lines.append('export OLLAMA_HOME="$HOME/.ollama"')
         lines.append('export PATH="$HOME/ollama/bin:$PATH"')
     if "R" in extras_upper:
-        # So workers (and Rscript) see packages the R extra installed.
         lines.append('export R_LIBS_USER="$HOME/.yuj-rlib"')
     return "\n".join(lines)
 
 
-# The bash is intentionally simple and shellcheck-clean. {recipes} and {env_sh}
-# are yuj-controlled; {env_materialize}/{install_block} are fixed installer
-# strings, never untrusted input.
 _SCRIPT_TEMPLATE = """\
 #!/usr/bin/env bash
 # yuj bootstrap{dry}: generated; safe to re-run.

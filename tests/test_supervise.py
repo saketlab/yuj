@@ -67,6 +67,24 @@ class TestSuperviseConfig:
                 input_file="items.txt",
             )
 
+    def test_unsafe_results_glob_raises(self) -> None:
+        with pytest.raises(YujError, match="unsafe results glob"):
+            SuperviseConfig(
+                job="j",
+                remote_dir="d",
+                work_command="x",
+                results_glob="~/out/*; rm -rf /",
+            )
+
+    def test_unsafe_remote_path_raises(self) -> None:
+        with pytest.raises(YujError, match="unsafe remote_dir"):
+            SuperviseConfig(
+                job="j",
+                remote_dir="d;rm -rf /",
+                work_command="x",
+                results_glob="~/*",
+            )
+
     def test_derived_names(self) -> None:
         assert CFG.run_script == "b20.yuj-run.sh"
         assert CFG.watchdog_script == "b20.yuj-watchdog.sh"
@@ -99,7 +117,6 @@ class TestSubmit:
         t = _FakeTransport()
         submit(t, CFG)  # type: ignore[arg-type]
         cron_cmd = next(r for r in t.runs if "crontab -" in r)
-        # Removes any prior ensure line, then appends the fresh one.
         assert "grep -v" in cron_cmd
         assert "b20.yuj-ensure.sh" in cron_cmd
         assert "crontab -l" in cron_cmd
@@ -155,8 +172,6 @@ class TestSubmit:
     def test_idempotent_calls(self) -> None:
         t = _FakeTransport()
         submit(t, CFG)  # type: ignore[arg-type]
-        # The remote-side commands and the uploaded script names must be stable
-        # across runs (only the local temp source path varies between calls).
         first_runs = list(t.runs)
         first_names = sorted(p.rsplit("/", 1)[-1] for p in t.puts)
         t.runs.clear()

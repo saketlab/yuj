@@ -8,7 +8,9 @@ from yuj import probe as probe_module
 from yuj._shell import CommandResult
 from yuj.exceptions import AuthError, YujError
 from yuj.fleet import Fleet, Host
-from yuj.probe import HostStatus, parse_status, probe_fleet, probe_host
+from yuj.probe import parse_status, probe_fleet, probe_host
+from yuj.status import HostStatus
+from yuj.transport import SSHTransport
 
 HOST = Host(name="box", ip="10.0.0.1", user="u", password="p")
 
@@ -108,7 +110,7 @@ class TestState:
 class TestProbeHost:
     def test_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            probe_module.SSHTransport,
+            SSHTransport,
             "run",
             lambda self, cmd, timeout=None: CommandResult(0, BLOCK, ""),
         )
@@ -121,13 +123,13 @@ class TestProbeHost:
         def boom(self, cmd, timeout=None):  # type: ignore[no-untyped-def]
             raise AuthError("banned")
 
-        monkeypatch.setattr(probe_module.SSHTransport, "run", boom)
+        monkeypatch.setattr(SSHTransport, "run", boom)
         s = probe_host(HOST)
         assert s.reachable is False and s.error is not None
 
     def test_missing_marker_unreachable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            probe_module.SSHTransport,
+            SSHTransport,
             "run",
             lambda self, cmd, timeout=None: CommandResult(0, "weird", ""),
         )
@@ -135,7 +137,7 @@ class TestProbeHost:
 
     def test_nonzero_exit_unreachable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            probe_module.SSHTransport,
+            SSHTransport,
             "run",
             lambda self, cmd, timeout=None: CommandResult(255, "", "no route"),
         )

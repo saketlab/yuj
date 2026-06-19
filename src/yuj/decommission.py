@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from yuj.exceptions import YujError
 from yuj.supervise import SuperviseConfig
-from yuj.transport import SSHTransport
+from yuj.transport import Transport
 
 _REL_DELAY = re.compile(r"^\+\s*(\d+)\s*(second|minute|hour)s?$", re.IGNORECASE)
 _SECONDS = {"second": 1, "minute": 60, "hour": 3600}
@@ -88,7 +88,7 @@ echo "dir=$([ -d "$HOME/{remote_dir}" ] && echo 1 || echo 0)"
 
 
 def decommission(
-    transport: SSHTransport,
+    transport: Transport,
     cfg: SuperviseConfig,
     *,
     remove_dir: bool = False,
@@ -122,7 +122,7 @@ def decommission(
 
 
 def schedule_decommission(
-    transport: SSHTransport,
+    transport: Transport,
     cfg: SuperviseConfig,
     when: str,
     *,

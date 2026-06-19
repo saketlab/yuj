@@ -1,13 +1,13 @@
 # Testing your setup
 
-There are two levels of tests: **local unit tests** (run in seconds, no SSH
-needed) and **real-fleet e2e tests** (opt-in, touch real hosts).
+The package ships **local unit tests** that run in seconds with no SSH needed.
+Beyond those, the surest check is a dry-run against your own hosts (below).
 
 ## Running the unit tests
 
 ```bash
 # Install dev dependencies (includes pytest, shellcheck-py, etc.)
-uv sync
+uv sync --locked
 
 # Run all unit tests
 uv run pytest
@@ -19,11 +19,8 @@ uv run pytest --cov=yuj --cov-report=term-missing
 Expected output:
 
 ```
-262 passed, 5 skipped in 2.0s
+353 passed
 ```
-
-The 5 skipped are the real-fleet e2e tests; they don't run unless you opt in
-(see below).
 
 ## Verifying your own installation
 
@@ -63,55 +60,32 @@ Classifies each host:
 yuj status            # full dashboard (CPU, GPU, load, outputs, age, owner)
 ```
 
-## Real-fleet e2e tests
+## Testing against your own hosts
 
-!!! warning "These tests SSH into real hosts"
-    The e2e suite is fully opt-in. Run it only on machines you own or have
-    explicit permission to use. **Do not run on a Friday evening** if a
-    production job is running alongside.
+:::{admonition} Use machines you own
+:class: warning
+Run this only on machines you own or have explicit permission to use, and not
+alongside a production job you can't afford to disturb.
+:::
 
-### Safety isolation
-
-Every e2e test uses **`job="yuj-test"`**, which makes all artifacts unique:
-
-| Artifact | production | yuj e2e |
-|----------|------------|---------|
-| Deploy dir | `~/hpc_v3/` | `~/yuj-test/` |
-| Cron line | `…ensure_watchdog.sh` | `…yuj-test.yuj-ensure.sh` |
-| Sentinel | `/tmp/watchdog.stop` | `/tmp/yuj-test.yuj.stop` |
-| Results | `hpc_v3/results/` | `~/yuj-test/results/` |
-
-A session finalizer decommissions every touched host at the end, and the suite
-fails if any production `run_b20.sh` process count drops.
-
-### Running
+Once the unit tests pass, validate yuj end-to-end with a tiny, harmless job:
 
 ```bash
-uv run pytest tests/e2e/ \
-  --fleet=/path/to/fleet.csv \
-  --launchpad-cred=~/.my-creds \
-  --include-hosts=myhost1,myhost2 \
-  --tb=short -v
+yuj diagnose                       # confirm every host is reachable
+yuj init --template bare my-check  # scaffold a trivial worker
+cd my-check
+# edit fleet.csv with your hosts, then:
+yuj bootstrap --check              # dry-run: what would be installed
+yuj run                            # deploy + start the watchdog
+yuj status --watch 10              # watch it produce
+yuj pull                           # gather results
+yuj decommission <host>            # hand the machine back clean
 ```
 
-Options:
-
-| Option | Description |
-|--------|-------------|
-| `--fleet PATH` | Fleet CSV with hosts + credentials |
-| `--include-hosts HOST,...` | **Required** opt-in list (never runs on all by default) |
-| `--launchpad-cred PATH` | File with `kcdh_password=...` for launchpad |
-| `--keep` | Don't delete `~/yuj-test/` after the run |
-
-### Scenarios
-
-| # | Test | What it proves |
-|---|------|---------------|
-| 1 | `test_bootstrap_real.py` | Bootstrap (uv + Ollama), idempotency |
-| 2 | `test_deploy_and_pull.py` | 200-item job completes; all digests correct |
-| 6 | `test_probe_classifies.py` | Diagnose net/sshd/banner/auth |
-| 7 | `test_do_not_use_respected.py` | `do_not_use` flag enforced |
-| 8 | Cleanup assertion in session finalizer | No stray cron/procs/dirs |
+yuj scopes every artifact to the job name (`<job>.yuj-*` scripts, a
+`<job>.yuj.stop` sentinel, a job-tagged cron line), so a run never touches
+another job already on the same host. Always finish with `yuj decommission` to
+remove the cron entry and its processes.
 
 ## Template shellcheck
 
@@ -130,7 +104,9 @@ The GitHub Actions workflow runs on every push:
 - Lint (ruff)
 - Format check (ruff format)
 - Type check (mypy --strict)
-- Tests (pytest, matrix: Python 3.12 + 3.13)
+- Tests (pytest, matrix: Python 3.12 + 3.13 + 3.14)
+- Docs build (Sphinx, warnings as errors)
+- Package build + wheel smoke test
 ```
 
-[![CI](https://github.com/saketkc/yuj/actions/workflows/ci.yml/badge.svg)](https://github.com/saketkc/yuj/actions/workflows/ci.yml)
+[![CI](https://github.com/saketlab/yuj/actions/workflows/ci.yml/badge.svg)](https://github.com/saketlab/yuj/actions/workflows/ci.yml)

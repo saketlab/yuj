@@ -5,33 +5,44 @@ from __future__ import annotations
 import getpass
 import time
 from pathlib import Path
-from typing import Annotated, Any, NoReturn
+from typing import Annotated
 
 import typer
-import yaml
-from rich.console import Console
 from rich.live import Live
-from rich.table import Table
 
 from yuj import __version__
-from yuj._render import diagnosis_table, status_table, summary_line
+from yuj._render import diagnosis_table, status_table
+from yuj.authorize import authorize_fleet
 from yuj.bootstrap import BootstrapConfig, bootstrap_fleet
+from yuj.cli_support import (
+    _die,
+    _do_deploy,
+    _do_submit,
+    _load,
+    _print_op_table,
+    _render_status,
+    _resolve_status_opts,
+    _run_html_dashboard,
+    _select_hosts,
+    _teardown_config,
+    console,
+)
 from yuj.decommission import decommission as _decommission
 from yuj.decommission import schedule_decommission as _schedule_decommission
-from yuj.deploy import DeployPlan, deploy_fleet
 from yuj.exceptions import YujError
-from yuj.fleet import Fleet, load_from_csv, load_from_yaml
-from yuj.probe import DEFAULT_STALL_MIN, diagnose_fleet, probe_fleet
+from yuj.keys import read_public_key
+from yuj.probe import diagnose_fleet, probe_fleet
 from yuj.provision import (
     DEFAULT_FLEET_OUT,
     DEFAULT_KEY_DIR,
     ProvisionConfig,
+    generate_keypair,
     provision_fleet,
 )
 from yuj.pull import pull_once
 from yuj.scaffolds import scaffold_files
-from yuj.supervise import SuperviseConfig, submit_fleet
-from yuj.transport import SSHTransport
+from yuj.scatter import read_items, scatter_fleet
+from yuj.transport import make_transport
 
 app = typer.Typer(
     name="yuj",
@@ -49,13 +60,6 @@ fleet_app = typer.Typer(
     help="Inspect and probe the fleet inventory.", no_args_is_help=True
 )
 app.add_typer(fleet_app, name="fleet")
-
-console = Console()
-err_console = Console(stderr=True)
-
-_FLEET_CANDIDATES = ("fleet.csv", "fleet.yaml", "fleet.yml")
-_DEFAULT_RESULTS_GLOB = "~/*"
-_DEFAULT_REMOTE_DIR = "yuj-run"
 
 _FleetOpt = Annotated[
     Path | None, typer.Option("--fleet", "-f", help="Fleet CSV/YAML path.")
@@ -159,9 +163,28 @@ def status(
         float | None,
         typer.Option("--watch", "-w", help="Refresh every N seconds (live mode)."),
     ] = None,
+    html: Annotated[
+        Path | None,
+        typer.Option("--html", help="Write a self-contained HTML dashboard to PATH."),
+    ] = None,
+    open_browser: Annotated[
+        bool, typer.Option("--open", help="Open the HTML dashboard in a browser.")
+    ] = False,
     timeout: Annotated[float, typer.Option(help="Per-host probe timeout (s).")] = 20.0,
 ) -> None:
     """Show fleet-wide status: producing, idle, stalled, down, or owner-occupied."""
+    if html is not None:
+        _run_html_dashboard(
+            fleet_path,
+            results_glob,
+            stall_min=stall_min,
+            timeout=timeout,
+            total_items=total,
+            html_path=html,
+            refresh=watch,
+            open_browser=open_browser,
+        )
+        return
     if watch is None:
         _render_status(
             fleet_path,
@@ -230,6 +253,121 @@ def submit(
 
 
 @app.command()
+def scatter(
+    fleet_path: _FleetOpt = None,
+    hosts: _HostsOpt = None,
+    input_path: Annotated[
+        str | None,
+        typer.Option("--input", help="Work list to split (else scatter.input)."),
+    ] = None,
+    into: Annotated[
+        str | None,
+        typer.Option("--into", help="Per-host filename to write (else scatter.into)."),
+    ] = None,
+    exclude: Annotated[
+        str | None,
+        typer.Option(
+            "--exclude", help="File of items to drop before split (e.g. done)."
+        ),
+    ] = None,
+    timeout: Annotated[float, typer.Option(help="Per-host op timeout (s).")] = 300.0,
+) -> None:
+    """Weighted-split a work list and write each host only its own slice.
+
+    The slice lands at ``remote_dir/<into>`` (the file your work loop reads).
+    Item counts follow each host's ``weight``; ``do_not_use``/zero-weight hosts
+    get nothing. Re-run any time to re-split (e.g. after editing weights).
+    """
+    fleet, config = _load(fleet_path)
+    fleet = _select_hosts(fleet, hosts)
+    scfg = config.scatter
+    src = input_path or scfg.get("input")
+    dest = into or scfg.get("into") or config.input_file
+    if not src:
+        _die("scatter needs an input list (--input or yuj.yaml scatter.input).")
+    if not dest:
+        _die("scatter needs a target filename (--into or yuj.yaml scatter.into).")
+    header = scfg.get("header")
+    try:
+        items = read_items(src)
+    except OSError as exc:
+        _die(f"could not read scatter input {src!r}: {exc}")
+    drop = set(read_items(exclude)) if exclude else None
+    results = scatter_fleet(
+        fleet,
+        items,
+        remote_dir=config.remote_dir,
+        filename=str(dest),
+        header=str(header) if header else None,
+        exclude=drop,
+        timeout=timeout,
+    )
+    total = sum(r.count for r in results.values() if r.ok)
+    console.print(
+        f"scattered [bold]{total:,}[/bold] of {len(items):,} items "
+        f"across {sum(1 for r in results.values() if r.ok)} host(s)"
+    )
+    _print_op_table(
+        "scatter",
+        [
+            (name, r.ok, r.error or f"{r.count:,} items -> {dest}")
+            for name, r in sorted(results.items())
+        ],
+    )
+
+
+@app.command()
+def authorize(
+    fleet_path: _FleetOpt = None,
+    hosts: _HostsOpt = None,
+    key: Annotated[
+        str | None,
+        typer.Option("--key", help="Public key to install (else authorize.key)."),
+    ] = None,
+    generate: Annotated[
+        str | None,
+        typer.Option(
+            "--generate",
+            help="Create a passphraseless keypair at this path first, then install it.",
+        ),
+    ] = None,
+    timeout: Annotated[float, typer.Option(help="Per-host op timeout (s).")] = 30.0,
+) -> None:
+    """Install an SSH public key on every host so future logins are key-based.
+
+    Uses each host's *current* auth (password or an existing key/agent) once to
+    append the key to its ``~/.ssh/authorized_keys``. Idempotent. After this,
+    point ``key_path`` at the private key in ``fleet.csv`` and drop passwords.
+    """
+    fleet, config = _load(fleet_path)
+    fleet = _select_hosts(fleet, hosts)
+    acfg = config.authorize
+    try:
+        if generate:
+            pubkey = generate_keypair(generate, comment="yuj-fleet")
+            console.print(f"generated keypair: [bold]{generate}[/bold] (+ .pub)")
+        else:
+            key_path = key or acfg.get("key")
+            if not key_path:
+                _die("authorize needs a key (--key, --generate, or authorize.key).")
+            pubkey = read_public_key(str(key_path))
+    except YujError as exc:
+        _die(str(exc))
+    results = authorize_fleet(fleet, pubkey, timeout=timeout)
+    _print_op_table(
+        "authorize",
+        [
+            (
+                name,
+                r.ok,
+                r.error or ("already authorized" if r.already else "key installed"),
+            )
+            for name, r in sorted(results.items())
+        ],
+    )
+
+
+@app.command()
 def bootstrap(
     fleet_path: _FleetOpt = None,
     hosts: _HostsOpt = None,
@@ -247,6 +385,13 @@ def bootstrap(
     env_file: Annotated[
         str | None, typer.Option("--env-file", help="Env spec file on each host.")
     ] = None,
+    from_tarball: Annotated[
+        str | None,
+        typer.Option(
+            "--from-tarball",
+            help="Use a pre-staged installer/env tarball on each host instead of curl.",
+        ),
+    ] = None,
     check: Annotated[
         bool, typer.Option("--check", help="Dry-run: report, install nothing.")
     ] = False,
@@ -258,7 +403,7 @@ def bootstrap(
     """Install an env manager (+ extras) on every host, from a bare login shell."""
     fleet, config = _load(fleet_path)
     fleet = _select_hosts(fleet, hosts)
-    bcfg = config.get("bootstrap") or {}
+    bcfg = config.bootstrap
     extras_list = (
         [e.strip() for e in extras.split(",") if e.strip()]
         if extras is not None
@@ -270,7 +415,8 @@ def bootstrap(
             python=python or str(bcfg.get("python", "3.12")),
             extras=tuple(extras_list),
             env_file=env_file or bcfg.get("env_file"),
-            remote_dir=_remote_dir(config),
+            remote_dir=config.remote_dir,
+            from_tarball=from_tarball or bcfg.get("from_tarball"),
             check=check,
         )
     except YujError as exc:
@@ -396,7 +542,7 @@ def decommission(
     except YujError as exc:
         _die(str(exc))
     cfg = _teardown_config(config)
-    transport = SSHTransport(target)
+    transport = make_transport(target)
     if at is not None:
         result = _schedule_decommission(
             transport, cfg, at, remove_dir=remove_dir, timeout=timeout
@@ -438,9 +584,8 @@ def pull(
     """
     fleet, config = _load(fleet_path)
     fleet = _select_hosts(fleet, hosts)
-    remote_dir = str(config.get("remote_dir", _DEFAULT_REMOTE_DIR))
-    output_dir = config.get("output_dir")
-    source = f"{remote_dir}/{output_dir}" if output_dir else remote_dir
+    output_dir = config.output_dir
+    source = f"{config.remote_dir}/{output_dir}" if output_dir else config.remote_dir
     results = pull_once(
         fleet,
         remote_dir=source,
@@ -483,214 +628,6 @@ def run(
     fleet = _select_hosts(fleet, hosts)
     _do_deploy(fleet, config, push_payload=not no_payload, timeout=deploy_timeout)
     _do_submit(fleet, config, start=not no_start, timeout=timeout)
-
-
-# -- helpers ---------------------------------------------------------------
-
-
-def _die(message: str) -> NoReturn:
-    """Print an error to stderr and exit with status 1."""
-    err_console.print(f"[bold red]error:[/bold red] {message}")
-    raise typer.Exit(code=1)
-
-
-def _remote_dir(config: dict[str, Any]) -> str:
-    """The remote deploy directory from config (relative to each host's $HOME)."""
-    return str(config.get("remote_dir", _DEFAULT_REMOTE_DIR))
-
-
-def _deploy_plan(config: dict[str, Any]) -> DeployPlan:
-    """Build the :class:`DeployPlan` from ``yuj.yaml``'s deploy section."""
-    deploy_cfg = config.get("deploy") or {}
-    return DeployPlan(
-        remote_dir=_remote_dir(config),
-        code_paths=tuple(Path(p) for p in deploy_cfg.get("code", [])),
-        payload_paths=tuple(Path(p) for p in deploy_cfg.get("payload", [])),
-    )
-
-
-def _do_deploy(
-    fleet: Fleet, config: dict[str, Any], *, push_payload: bool, timeout: float
-) -> None:
-    """Deploy to the fleet and print the outcome table (exits on any failure)."""
-    results = deploy_fleet(
-        fleet, _deploy_plan(config), push_payload=push_payload, timeout=timeout
-    )
-    _print_op_table(
-        "deploy",
-        [
-            (name, r.ok, r.error or f"sent {', '.join(r.transferred) or '(nothing)'}")
-            for name, r in sorted(results.items())
-        ],
-    )
-
-
-def _do_submit(
-    fleet: Fleet, config: dict[str, Any], *, start: bool, timeout: float
-) -> None:
-    """Install supervision on the fleet and print the outcome table."""
-    results = submit_fleet(
-        fleet, _supervise_config(config), start=start, timeout=timeout
-    )
-    _print_op_table(
-        "submit",
-        [
-            (
-                name,
-                r.ok,
-                r.error or f"watchdog={r.watchdog_running} cron={r.cron_installed}",
-            )
-            for name, r in sorted(results.items())
-        ],
-    )
-
-
-def _select_hosts(fleet: Fleet, hosts: str | None) -> Fleet:
-    """Resolve the --hosts selection, refusing explicitly-named do_not_use hosts."""
-    if not hosts or hosts.strip().lower() == "all":
-        return fleet.usable
-    names = [n.strip() for n in hosts.split(",") if n.strip()]
-    try:
-        selected = fleet.select(names)
-    except YujError as exc:
-        _die(str(exc))
-    refused = [h.name for h in selected if h.do_not_use]
-    if refused:
-        _die(f"{', '.join(refused)} is marked do_not_use; refusing.")
-    return selected
-
-
-def _teardown_config(config: dict[str, Any]) -> SuperviseConfig:
-    """Build a SuperviseConfig for teardown (work_command/results_glob unused)."""
-    return SuperviseConfig(
-        job=str(config.get("job", "yuj")),
-        remote_dir=_remote_dir(config),
-        work_command="true",
-        results_glob=str(config.get("results_glob", _DEFAULT_RESULTS_GLOB)),
-    )
-
-
-def _render_status(
-    fleet_path: Path | None,
-    results_glob: str | None,
-    *,
-    stall_min: int | None,
-    timeout: float,
-    total_items: int | None,
-) -> None:
-    """Resolve the fleet, probe once, and print the table + summary."""
-    fleet, config = _load(fleet_path)
-    glob, threshold, total = _resolve_status_opts(
-        config, results_glob, stall_min, total_items
-    )
-    statuses = probe_fleet(fleet, results_glob=glob, timeout=timeout)
-    console.print(
-        status_table(statuses, stall_threshold_min=threshold, total_items=total)
-    )
-    console.print(
-        summary_line(statuses, stall_threshold_min=threshold, total_items=total),
-        style="dim",
-    )
-
-
-def _resolve_status_opts(
-    config: dict[str, Any],
-    results_glob: str | None,
-    stall_min: int | None,
-    total: int | None,
-) -> tuple[str, int, int | None]:
-    """Resolve (glob, stall threshold, total items) from flags then config."""
-    glob = results_glob or config.get("results_glob") or _DEFAULT_RESULTS_GLOB
-    threshold = stall_min or int(config.get("stall_min", DEFAULT_STALL_MIN))
-    total_items = total if total is not None else _count_items(config)
-    return glob, threshold, total_items
-
-
-def _count_items(config: dict[str, Any]) -> int | None:
-    """Count non-blank lines in the local input_file, if configured."""
-    input_file = config.get("input_file")
-    if not input_file:
-        return None
-    path = Path(str(input_file))
-    if not path.is_file():
-        return None
-    with path.open(encoding="utf-8") as fh:
-        return sum(1 for line in fh if line.strip())
-
-
-def _supervise_config(config: dict[str, Any]) -> SuperviseConfig:
-    """Build a :class:`SuperviseConfig` from ``yuj.yaml`` (work_command required)."""
-    work_command = config.get("work_command")
-    if not work_command:
-        _die("'work_command' is required in yuj.yaml for `yuj submit`.")
-    try:
-        return SuperviseConfig(
-            job=str(config.get("job", "yuj")),
-            remote_dir=_remote_dir(config),
-            work_command=str(work_command),
-            results_glob=str(config.get("results_glob", _DEFAULT_RESULTS_GLOB)),
-            input_file=config.get("input_file"),
-            output_dir=config.get("output_dir"),
-            output_suffix=str(config.get("output_suffix", "")),
-            stall_min=int(config.get("stall_min", DEFAULT_STALL_MIN)),
-        )
-    except YujError as exc:
-        _die(str(exc))
-
-
-def _print_op_table(verb: str, rows: list[tuple[str, bool, str]]) -> None:
-    """Render a per-host outcome table for deploy/submit."""
-    table = Table(title=f"yuj {verb}", header_style="bold cyan")
-    table.add_column("host", style="bold")
-    table.add_column("result")
-    table.add_column("detail", style="dim")
-    for name, ok, detail in rows:
-        mark = "[green]✓ ok[/green]" if ok else "[bold red]✗ failed[/bold red]"
-        table.add_row(name, mark, detail)
-    console.print(table)
-    failures = [name for name, ok, _ in rows if not ok]
-    if failures:
-        console.print(
-            f"[yellow]{len(failures)} host(s) failed:[/yellow] " + ", ".join(failures)
-        )
-        raise typer.Exit(code=1)
-
-
-def _load(fleet_path: Path | None) -> tuple[Fleet, dict[str, Any]]:
-    """Read config, then find and load the fleet; exits with status 1 on error."""
-    config = _read_config()
-    path = fleet_path or _autodetect_fleet(config)
-    try:
-        fleet = _load_fleet(path)
-    except YujError as exc:
-        _die(str(exc))
-    return fleet, config
-
-
-def _read_config() -> dict[str, Any]:
-    """Read ``yuj.yaml`` from the cwd if present; return an empty dict otherwise."""
-    config_path = Path("yuj.yaml")
-    if not config_path.is_file():
-        return {}
-    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    return data if isinstance(data, dict) else {}
-
-
-def _autodetect_fleet(config: dict[str, Any]) -> Path:
-    """Find the fleet file from config or the conventional filenames."""
-    if config.get("fleet"):
-        return Path(str(config["fleet"]))
-    for candidate in _FLEET_CANDIDATES:
-        if Path(candidate).is_file():
-            return Path(candidate)
-    _die("no fleet file found. Run `yuj init` or pass --fleet PATH.")
-
-
-def _load_fleet(path: Path) -> Fleet:
-    """Load a fleet from a path, dispatching on file extension."""
-    if path.suffix.lower() in (".yaml", ".yml"):
-        return load_from_yaml(path)
-    return load_from_csv(path)
 
 
 if __name__ == "__main__":  # pragma: no cover

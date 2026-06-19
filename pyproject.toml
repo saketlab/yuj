@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "yuj"
-version = "0.1.0.dev0"
+dynamic = ["version"]
 description = "A polite, daemon-less batch distributor for opportunistic SSH targets."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -30,6 +30,7 @@ classifiers = [
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: System :: Distributed Computing",
     "Topic :: System :: Clustering",
     "Typing :: Typed",
@@ -44,9 +45,12 @@ dependencies = [
 [project.optional-dependencies]
 paramiko = ["paramiko>=3.4"]
 docs = [
-    "mkdocs-material>=9.5",
-    "mkdocs-minify-plugin>=0.8",
-    "mkdocstrings[python]>=0.25",
+    "sphinx>=7.3",
+    "furo>=2024.5",
+    "myst-parser>=3.0",
+    "sphinx-design>=0.6",
+    "sphinx-copybutton>=0.5",
+    "sphinxcontrib-mermaid>=0.9",
 ]
 
 [project.urls]
@@ -68,6 +72,9 @@ dev = [
     "pre-commit>=3.8",
     "shellcheck-py>=0.10",
 ]
+
+[tool.hatch.version]
+path = "src/yuj/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/yuj"]
@@ -119,4 +126,9 @@ exclude_lines = [
     "pragma: no cover",
     "if TYPE_CHECKING:",
     "raise NotImplementedError",
+]
+
+[tool.pytest.ini_options]
+markers = [
+    "e2e: end-to-end tests that SSH into real hosts (opt-in; deselect with -m 'not e2e')",
 ]

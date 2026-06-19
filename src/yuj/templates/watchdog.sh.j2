@@ -17,6 +17,28 @@ GRACE={{ grace_sec }}
 mkdir -p "$LOGDIR"
 
 log() { echo "$(date '+%F %T') $*" >>"$LOG"; }
+{% if has_window %}
+# Active window: only run between {{ window_label }} (minutes since midnight,
+# wrapping past midnight when start > end). Outside it the work loop is paused
+# and not relaunched, so the host's owner gets their machine back during the day.
+WIN_START={{ window_start_min }}
+WIN_END={{ window_end_min }}
+within_window() {
+    local now
+    now=$((10#$(date +%H) * 60 + 10#$(date +%M)))
+    if [ "$WIN_START" -eq "$WIN_END" ]; then return 0; fi
+    if [ "$WIN_START" -lt "$WIN_END" ]; then
+        [ "$now" -ge "$WIN_START" ] && [ "$now" -lt "$WIN_END" ]
+    else
+        [ "$now" -ge "$WIN_START" ] || [ "$now" -lt "$WIN_END" ]
+    fi
+}
+pause_work() {
+    pkill -f "[b]ash $RUN" 2>/dev/null
+{% if off_window_command %}    {{ off_window_command }}
+{% endif %}
+}
+{% endif %}
 
 # Count processes matching a pattern. Bracket the first char so the grep does
 # not match its own argv.
@@ -44,10 +66,27 @@ for p in $(ps -eo pid,args 2>/dev/null | awk -v j="$JOB" '/yuj-watchdog/ && $0 ~
 done
 
 last_action=$(date +%s)
+{% if has_window %}
+if within_window; then
+    relaunch
+else
+    log "outside active window {{ window_label }}; not starting yet"
+fi
+{% else %}
 relaunch
+{% endif %}
 while [ ! -f "$STOP" ]; do
     sleep "$INTERVAL"
     [ -f "$STOP" ] && break
+{% if has_window %}
+    if ! within_window; then
+        if [ "$(count "[b]ash $RUN")" -gt 0 ]; then
+            log "ACTION: outside active window {{ window_label }} -> pause work"
+            pause_work
+        fi
+        continue
+    fi
+{% endif %}
     run_n=$(count "[b]ash $RUN")
     age=$(newest_age_min)
     now=$(date +%s)

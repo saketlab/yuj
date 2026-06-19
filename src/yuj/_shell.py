@@ -9,20 +9,25 @@ from dataclasses import dataclass
 
 from yuj.exceptions import CommandTimeout, TransportError
 
-# Conservative SSH options shared by every connection, chosen for borrowed lab
-# boxes: don't prompt on unknown host keys (they get reimaged often), don't
-# pollute the user's known_hosts, fail fast on a bad password rather than
-# re-prompting, and cap connect time so a down host doesn't wedge the whole run.
-_BASE_SSH_OPTS: tuple[str, ...] = (
-    "-o",
-    "StrictHostKeyChecking=no",
-    "-o",
-    "UserKnownHostsFile=/dev/null",
+# Shared SSH options; host-key verification is configured per host.
+_COMMON_SSH_OPTS: tuple[str, ...] = (
     "-o",
     "NumberOfPasswordPrompts=1",
     "-o",
     "LogLevel=ERROR",
 )
+
+
+def _ssh_options(*, strict_host_key: bool, known_hosts_file: str | None) -> list[str]:
+    opts = list(_COMMON_SSH_OPTS)
+    if strict_host_key:
+        opts += ["-o", "StrictHostKeyChecking=yes"]
+        if known_hosts_file:
+            opts += ["-o", f"UserKnownHostsFile={known_hosts_file}"]
+    else:
+        opts += ["-o", "StrictHostKeyChecking=no"]
+        opts += ["-o", "UserKnownHostsFile=/dev/null"]
+    return opts
 
 
 @dataclass(frozen=True)
@@ -111,6 +116,8 @@ def ssh_command(
     key_path: str | None = None,
     connect_timeout: int = 20,
     force_password: bool = False,
+    strict_host_key: bool = False,
+    known_hosts_file: str | None = None,
     extra_opts: Sequence[str] = (),
 ) -> list[str]:
     """Build the ``ssh`` argv to run ``remote_command`` on a host.
@@ -121,7 +128,12 @@ def ssh_command(
     auth is forced. The password itself is never part of this argv; it is fed to
     ``sshpass`` via the environment by the caller.
     """
-    argv: list[str] = ["ssh", *_BASE_SSH_OPTS]
+    argv: list[str] = [
+        "ssh",
+        *_ssh_options(
+            strict_host_key=strict_host_key, known_hosts_file=known_hosts_file
+        ),
+    ]
     argv += ["-o", f"ConnectTimeout={connect_timeout}"]
     argv += ["-p", str(port)]
     if key_path:
@@ -142,6 +154,8 @@ def rsync_command(
     key_path: str | None = None,
     connect_timeout: int = 20,
     force_password: bool = False,
+    strict_host_key: bool = False,
+    known_hosts_file: str | None = None,
     includes: Sequence[str] = (),
     excludes: Sequence[str] = (),
     extra_opts: Sequence[str] = (),
@@ -155,7 +169,14 @@ def rsync_command(
     """
     argv: list[str] = ["rsync", "-az", "--partial"]
     if ssh_host is not None:
-        ssh_opts = ["ssh", *_BASE_SSH_OPTS, "-o", f"ConnectTimeout={connect_timeout}"]
+        ssh_opts = [
+            "ssh",
+            *_ssh_options(
+                strict_host_key=strict_host_key, known_hosts_file=known_hosts_file
+            ),
+            "-o",
+            f"ConnectTimeout={connect_timeout}",
+        ]
         ssh_opts += ["-p", str(port)]
         if key_path:
             ssh_opts += ["-i", key_path, "-o", "PubkeyAuthentication=yes"]

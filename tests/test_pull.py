@@ -38,7 +38,9 @@ class _StubTransport:
 
 @pytest.fixture
 def _patch_transport(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(pull_module, "SSHTransport", _StubTransport)
+    monkeypatch.setattr(
+        pull_module, "make_transport", lambda host, **_kw: _StubTransport(host)
+    )
 
 
 def test_pull_once_reports_per_host(tmp_path: Path, _patch_transport: None) -> None:

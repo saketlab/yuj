@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from yuj.authorize import AuthorizeResult, authorize_fleet, authorize_key
 from yuj.bootstrap import BootstrapConfig, BootstrapResult, bootstrap, bootstrap_fleet
+from yuj.config import ProjectConfig
 from yuj.decommission import (
     DecommissionResult,
     decommission,
@@ -18,9 +20,9 @@ from yuj.exceptions import (
     YujError,
 )
 from yuj.fleet import Fleet, Host, load_from_csv, load_from_yaml
+from yuj.keys import read_public_key
+from yuj.local import LocalTransport
 from yuj.probe import (
-    Diagnosis,
-    HostStatus,
     classify_host,
     diagnose_fleet,
     probe_fleet,
@@ -35,7 +37,15 @@ from yuj.provision import (
 )
 from yuj.pull import PullResult, pull_once
 from yuj.scaffolds import scaffold_files
+from yuj.scatter import (
+    ScatterResult,
+    plan_scatter,
+    read_items,
+    scatter_fleet,
+    scatter_host,
+)
 from yuj.split import Assignment, chunked, pending_items, redistribute, weighted_split
+from yuj.status import Diagnosis, HostStatus
 from yuj.supervise import (
     SubmitResult,
     SuperviseConfig,
@@ -43,11 +53,13 @@ from yuj.supervise import (
     submit,
     submit_fleet,
 )
-from yuj.transport import SSHTransport
+from yuj.transport import SSHTransport, Transport, make_transport
+from yuj.window import Window
 
 __all__ = [
     "Assignment",
     "AuthError",
+    "AuthorizeResult",
     "BootstrapConfig",
     "BootstrapResult",
     "CommandTimeout",
@@ -59,16 +71,23 @@ __all__ = [
     "FleetError",
     "Host",
     "HostStatus",
+    "LocalTransport",
+    "ProjectConfig",
     "ProvisionConfig",
     "ProvisionResult",
     "PullResult",
     "SSHTransport",
+    "ScatterResult",
     "SplitError",
     "SubmitResult",
     "SuperviseConfig",
+    "Transport",
     "TransportError",
+    "Window",
     "YujError",
     "__version__",
+    "authorize_fleet",
+    "authorize_key",
     "bootstrap",
     "bootstrap_fleet",
     "chunked",
@@ -80,14 +99,20 @@ __all__ = [
     "generate_keypair",
     "load_from_csv",
     "load_from_yaml",
+    "make_transport",
     "pending_items",
+    "plan_scatter",
     "probe_fleet",
     "probe_host",
     "provision",
     "provision_fleet",
     "pull_once",
+    "read_items",
+    "read_public_key",
     "redistribute",
     "scaffold_files",
+    "scatter_fleet",
+    "scatter_host",
     "schedule_decommission",
     "stop",
     "submit",

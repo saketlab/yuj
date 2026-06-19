@@ -142,13 +142,13 @@ class TestLoadFromCsv:
         csv = tmp_path / "fleet.csv"
         csv.write_text(
             "username,ip,machine,password\n"
-            "saket,10.0.0.1,nilanjana,secret1\n"
-            "saket,10.0.0.2,darakshan,secret2\n"
+            "saket,10.0.0.1,alpha,secret1\n"
+            "saket,10.0.0.2,bravo,secret2\n"
         )
         fleet = load_from_csv(csv)
-        assert fleet.names == ("nilanjana", "darakshan")
-        assert fleet.get("nilanjana").user == "saket"
-        assert fleet.get("nilanjana").use_password is True
+        assert fleet.names == ("alpha", "bravo")
+        assert fleet.get("alpha").user == "saket"
+        assert fleet.get("alpha").use_password is True
 
     def test_optional_columns(self, tmp_path: Path) -> None:
         csv = tmp_path / "fleet.csv"
@@ -162,6 +162,16 @@ class TestLoadFromCsv:
         assert host.weight == 2.5
         assert host.port == 2222
         assert host.auth_kind == "key"
+
+    def test_strict_host_key_columns(self, tmp_path: Path) -> None:
+        csv = tmp_path / "fleet.csv"
+        csv.write_text(
+            "user,host,name,key_path,strict_host_key,known_hosts_file\n"
+            "me,1.1.1.1,box,/home/me/.ssh/id_ed25519,true,/tmp/known_hosts\n"
+        )
+        host = load_from_csv(csv).get("box")
+        assert host.strict_host_key is True
+        assert host.known_hosts_file == "/tmp/known_hosts"
 
     def test_skips_blank_named_rows(self, tmp_path: Path) -> None:
         csv = tmp_path / "fleet.csv"
@@ -220,6 +230,24 @@ class TestLoadFromYaml:
         assert fleet.get("b").user == "other"
         assert fleet.get("b").weight == 5.0
         assert fleet.get("b").port == 2200
+
+    def test_strict_host_key_defaults_and_overrides(self, tmp_path: Path) -> None:
+        yml = tmp_path / "fleet.yaml"
+        yml.write_text(
+            "user: u\n"
+            "strict_host_key: true\n"
+            "known_hosts_file: /tmp/known_hosts\n"
+            "machines:\n"
+            "  - name: a\n"
+            "    ip: 1\n"
+            "  - name: b\n"
+            "    ip: 2\n"
+            "    strict_host_key: false\n"
+        )
+        fleet = load_from_yaml(yml)
+        assert fleet.get("a").strict_host_key is True
+        assert fleet.get("a").known_hosts_file == "/tmp/known_hosts"
+        assert fleet.get("b").strict_host_key is False
 
     def test_host_key_alias_for_ip(self, tmp_path: Path) -> None:
         yml = tmp_path / "fleet.yaml"

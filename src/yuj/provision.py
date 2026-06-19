@@ -12,7 +12,8 @@ from yuj._shell import have_executable
 from yuj._shell import run as _run
 from yuj.exceptions import YujError
 from yuj.fleet import Fleet, map_fleet
-from yuj.transport import SSHTransport
+from yuj.keys import is_shell_safe_public_key
+from yuj.transport import Transport, make_transport
 
 DEFAULT_PROVISION_TIMEOUT = 120.0
 DEFAULT_MAX_WORKERS = 4
@@ -23,9 +24,6 @@ DEFAULT_FLEET_OUT = "provisioned-fleet.csv"
 # start, then word characters / dashes; the same charset useradd accepts. This
 # both validates the name and forecloses any shell-injection via the username.
 _VALID_USERNAME = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
-# An OpenSSH public key line: type, base64 body, optional comment. No quotes,
-# so it is safe to embed single-quoted in the generated script.
-_VALID_PUBKEY = re.compile(r"^[\w+/= @.\-:]+$")
 
 
 @dataclass(frozen=True)
@@ -110,7 +108,7 @@ def build_provision_script(cfg: ProvisionConfig, public_key: str) -> str:
     The script runs as root (the caller wraps it in ``sudo``). ``new_user`` is
     validated by :class:`ProvisionConfig`; ``public_key`` is validated here.
     """
-    if not _VALID_PUBKEY.match(public_key):
+    if not is_shell_safe_public_key(public_key):
         raise YujError(
             "refusing to install a malformed SSH public key",
             hint="expected an 'ssh-ed25519 AAAA... comment' line from ssh-keygen",
@@ -138,7 +136,7 @@ def build_provision_script(cfg: ProvisionConfig, public_key: str) -> str:
 
 
 def provision(
-    transport: SSHTransport,
+    transport: Transport,
     cfg: ProvisionConfig,
     *,
     public_key: str,
@@ -210,7 +208,7 @@ def provision_fleet(
     results = map_fleet(
         admin_fleet,
         lambda host: provision(
-            SSHTransport(host, connect_timeout=connect_timeout),
+            make_transport(host, connect_timeout=connect_timeout),
             cfg,
             public_key=public_key,
             timeout=timeout,

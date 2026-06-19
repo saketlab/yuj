@@ -5,14 +5,16 @@ from __future__ import annotations
 import re
 import shlex
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from jinja2 import Environment, PackageLoader
 
 from yuj.exceptions import YujError
-from yuj.fleet import Fleet, map_fleet
-from yuj.transport import SSHTransport
+from yuj.fleet import Fleet, Host, map_fleet
+from yuj.shell_safety import validate_remote_glob, validate_remote_path
+from yuj.transport import Transport, make_transport
+from yuj.window import Window
 
 _JOB_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
@@ -47,6 +49,11 @@ class SuperviseConfig:
         stall_min: Minutes of no new output before the job is considered stalled.
         grace_sec: Seconds after a (re)launch during which stalls are tolerated.
         cron_minutes: Cron cadence for the ensure self-heal.
+        active_window: Optional daily run window ``"HH:MM-HH:MM"`` (may wrap past
+            midnight). Outside it the watchdog pauses the work loop and does not
+            relaunch, so a borrowed desktop is free for its owner during the day.
+        off_window_command: Optional shell run when leaving the window, in
+            addition to killing the work loop (e.g. stop a GPU server).
     """
 
     job: str
@@ -60,6 +67,8 @@ class SuperviseConfig:
     stall_min: int = 90
     grace_sec: int = 2700
     cron_minutes: int = 15
+    active_window: str | None = None
+    off_window_command: str | None = None
 
     def __post_init__(self) -> None:
         if not _JOB_RE.match(self.job):
@@ -69,6 +78,29 @@ class SuperviseConfig:
             )
         if self.input_file and not self.output_dir:
             raise YujError("output_dir is required when input_file is set")
+        validate_remote_path(self.remote_dir, label="remote_dir")
+        validate_remote_glob(self.results_glob)
+        if self.input_file:
+            validate_remote_path(self.input_file, label="input_file")
+        if self.output_dir:
+            validate_remote_path(self.output_dir, label="output_dir")
+        if self.active_window:
+            Window.parse(self.active_window)  # validate early; raises on bad format
+
+    @property
+    def window(self) -> Window | None:
+        """The parsed :class:`Window`, or ``None`` when always-on."""
+        return Window.parse(self.active_window) if self.active_window else None
+
+    def for_host(self, host: Host) -> SuperviseConfig:
+        """Return this config specialised for ``host``.
+
+        A per-host ``window`` (the fleet.csv column) overrides the job-level
+        ``active_window``.
+        """
+        if host.window is None:
+            return self
+        return replace(self, active_window=host.window or None)
 
     @property
     def run_script(self) -> str:
@@ -88,8 +120,6 @@ class SuperviseConfig:
     @property
     def stop_sentinel(self) -> str:
         """Path of the stop sentinel that cleanly halts the job."""
-        # /tmp because controller and host must agree on the path, and it is
-        # touch-only (never read as data).
         return f"/tmp/{self.job}.yuj.stop"  # noqa: S108  # nosec B108
 
     @property
@@ -113,6 +143,7 @@ class SubmitResult:
 
 
 def _context(cfg: SuperviseConfig) -> dict[str, object]:
+    window = cfg.window
     return {
         "job": cfg.job,
         "remote_dir": cfg.remote_dir,
@@ -129,6 +160,11 @@ def _context(cfg: SuperviseConfig) -> dict[str, object]:
         "watchdog_script": cfg.watchdog_script,
         "ensure_script": cfg.ensure_script,
         "stop_sentinel": cfg.stop_sentinel,
+        "has_window": window is not None,
+        "window_start_min": window.start_min if window else 0,
+        "window_end_min": window.end_min if window else 0,
+        "window_label": window.label if window else "",
+        "off_window_command": cfg.off_window_command or "",
     }
 
 
@@ -154,7 +190,7 @@ def rendered_scripts(cfg: SuperviseConfig) -> dict[str, str]:
 
 
 def submit(
-    transport: SSHTransport,
+    transport: Transport,
     cfg: SuperviseConfig,
     *,
     start: bool = True,
@@ -179,8 +215,6 @@ def submit(
         wd, cron = _verify(transport, cfg, timeout=timeout)
     except YujError as exc:
         return SubmitResult(host=host, ok=False, error=str(exc))
-    # Watchdog running is the critical signal; cron is self-heal and may be
-    # unavailable (e.g. macOS Full Disk Access restriction on SSH sessions).
     if wd:
         error = None
     elif cron:
@@ -205,12 +239,16 @@ def submit_fleet(
     timeout: float = 120.0,
     max_workers: int = 8,
 ) -> dict[str, SubmitResult]:
-    """Submit ``cfg`` to every host in parallel; tolerant of individual failures."""
+    """Submit ``cfg`` to every host in parallel; tolerant of individual failures.
+
+    Each host is supervised with its own :meth:`SuperviseConfig.for_host`, so a
+    per-host ``window`` time-boxes that host while others stay always-on.
+    """
     return map_fleet(
         fleet,
         lambda host: submit(
-            SSHTransport(host, connect_timeout=connect_timeout),
-            cfg,
+            make_transport(host, connect_timeout=connect_timeout),
+            cfg.for_host(host),
             start=start,
             timeout=timeout,
         ),
@@ -218,15 +256,13 @@ def submit_fleet(
     )
 
 
-def stop(
-    transport: SSHTransport, cfg: SuperviseConfig, *, timeout: float = 30.0
-) -> None:
+def stop(transport: Transport, cfg: SuperviseConfig, *, timeout: float = 30.0) -> None:
     """Touch the stop sentinel so the watchdog tears the job down gracefully."""
     transport.run(f"touch {shlex.quote(cfg.stop_sentinel)}", timeout=timeout)
 
 
 def _upload_scripts(
-    transport: SSHTransport, cfg: SuperviseConfig, *, timeout: float
+    transport: Transport, cfg: SuperviseConfig, *, timeout: float
 ) -> None:
     """Render scripts to a temp dir, rsync them up, and make them executable."""
     remote = cfg.remote_dir.rstrip("/")
@@ -246,7 +282,7 @@ def _upload_scripts(
 
 
 def _install_cron(
-    transport: SSHTransport, cfg: SuperviseConfig, *, timeout: float
+    transport: Transport, cfg: SuperviseConfig, *, timeout: float
 ) -> None:
     """Install the ensure cron entry, removing any prior copy first (dedupe)."""
     install = (
@@ -257,7 +293,7 @@ def _install_cron(
 
 
 def _start_watchdog(
-    transport: SSHTransport, cfg: SuperviseConfig, *, timeout: float
+    transport: Transport, cfg: SuperviseConfig, *, timeout: float
 ) -> None:
     """Launch the watchdog, fully detached so ssh returns promptly."""
     remote = shlex.quote(cfg.remote_dir.rstrip("/"))
@@ -270,7 +306,7 @@ def _start_watchdog(
 
 
 def _verify(
-    transport: SSHTransport, cfg: SuperviseConfig, *, timeout: float
+    transport: Transport, cfg: SuperviseConfig, *, timeout: float
 ) -> tuple[bool, bool]:
     """Return ``(watchdog_running, cron_installed)`` read back from the host."""
     ensure = shlex.quote(cfg.ensure_script)

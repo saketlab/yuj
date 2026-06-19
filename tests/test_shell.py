@@ -92,6 +92,18 @@ class TestSshCommand:
         assert "StrictHostKeyChecking=no" in argv
         assert "UserKnownHostsFile=/dev/null" in argv
 
+    def test_strict_host_key_uses_known_hosts(self) -> None:
+        argv = ssh_command(
+            user="u",
+            host="h",
+            remote_command="ls",
+            strict_host_key=True,
+            known_hosts_file="/tmp/known_hosts",
+        )
+        assert "StrictHostKeyChecking=yes" in argv
+        assert "UserKnownHostsFile=/tmp/known_hosts" in argv
+        assert "UserKnownHostsFile=/dev/null" not in argv
+
     def test_remote_command_is_single_argument(self) -> None:
         # The whole remote command is one argv element, never shell-split locally.
         argv = ssh_command(user="u", host="h", remote_command="rm -rf $HOME/x && ls")
@@ -136,6 +148,18 @@ class TestRsyncCommand:
         e_value = argv[argv.index("-e") + 1]
         assert "-i /k" in e_value
         assert "PubkeyAuthentication=yes" in e_value
+
+    def test_strict_host_key_in_ssh_transport(self) -> None:
+        argv = rsync_command(
+            source="s",
+            destination="u@h:d",
+            ssh_host="h",
+            strict_host_key=True,
+            known_hosts_file="/tmp/kh",
+        )
+        e_value = argv[argv.index("-e") + 1]
+        assert "StrictHostKeyChecking=yes" in e_value
+        assert "UserKnownHostsFile=/tmp/kh" in e_value
 
 
 class TestWithSshpass:

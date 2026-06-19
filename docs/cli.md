@@ -37,13 +37,12 @@ yuj generates one ed25519 keypair, installs the public key in each new user's
 `~/.ssh/authorized_keys` (key auth only, no password is set), locks the
 account's password, and writes a ready-to-use worker fleet CSV.
 
-| Flag | Description |
-|------|-------------|
-| `--user` | Worker username to create (default `yuj`) |
-| `--ask-sudo-pass` | Prompt for the admin's sudo password; by default the admin's SSH password is reused |
-| `--key-dir` | Where the generated private key is stored (default `.yuj/keys/`) |
-| `--out` | Path for the generated worker fleet CSV (default `provisioned-fleet.csv`) |
-| `--check` | Dry-run: report what would happen, create nothing |
+`--user` names the worker account to create (default `yuj`). For sudo, yuj
+reuses the admin's SSH password unless you pass `--ask-sudo-pass` to be prompted
+separately. `--key-dir` sets where the generated private key lands (default
+`.yuj/keys/`) and `--out` names the worker fleet CSV it writes (default
+`provisioned-fleet.csv`). `--check` is a dry run: it reports what would happen
+and creates nothing.
 
 The sudo password travels over SSH stdin (`sudo -S`), never on a command line.
 Re-running is idempotent: the keypair is reused, existing users are left in
@@ -61,15 +60,17 @@ Install an environment manager + extras on every host (idempotent, no root).
 
 ```bash
 yuj bootstrap [--fleet PATH] [--hosts a,b,...] [--env-manager uv|pixi|micromamba|conda]
-              [--python 3.12] [--extras OLLAMA,R] [--check] [--max-workers 4]
+              [--python 3.12] [--extras OLLAMA,R] [--env-file PATH]
+              [--from-tarball REMOTE_PATH] [--check] [--max-workers 4]
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--env-manager` | Environment manager to install |
-| `--extras OLLAMA,R` | Named bundles to install (R, OLLAMA, SHELLCHECK, RCLONE) |
-| `--check` | Dry-run: print what would be done, install nothing |
-| `--max-workers` | Max parallel hosts (default 4; keep low to avoid fail2ban) |
+`--env-manager` picks which manager to install. `--extras` takes a comma-list of
+named bundles — `R`, `OLLAMA`, `SHELLCHECK`, `RCLONE`. `--env-file` points at
+an environment spec already deployed with your project. `--from-tarball` uses a
+pre-staged remote tarball instead of fetching an installer live, which is the
+reproducible/offline path for pinned bootstrap assets. `--check` does a dry run,
+installing nothing. Keep `--max-workers` low (default 4) so parallel SSH logins
+don't trip fail2ban.
 
 ## `yuj deploy`
 
@@ -92,6 +93,61 @@ yuj submit [--fleet PATH] [--hosts a,b,...] [--no-start]
 
 `--no-start` installs the scripts + cron but doesn't launch the watchdog. Use
 it for staging.
+
+## `yuj run`
+
+Deploy then submit in one step, the everyday shorthand for `yuj deploy && yuj
+submit`.
+
+```bash
+yuj run [--fleet PATH] [--hosts a,b,...] [--no-payload] [--no-start]
+```
+
+`--no-payload` skips heavy data already on each host (the lightweight re-run
+path); `--no-start` installs the watchdog without launching it.
+
+## `yuj scatter`
+
+Weighted-split a work list and write **each host only its own slice** of items,
+so no two hosts process the same item. Without scatter, every host reads the
+full `input_file` (safe, thanks to resume-by-output, but redundant).
+
+```bash
+yuj scatter [--fleet PATH] [--hosts a,b,...] [--input LIST]
+            [--into FILENAME] [--exclude DONE_FILE]
+```
+
+`--input` is the work list to split (otherwise `scatter.input` from `yuj.yaml`).
+`--into` is the per-host filename it writes (otherwise `scatter.into`, then
+`input_file`). `--exclude` points at a file of items to drop before splitting —
+handy for skipping work that's already done.
+
+Item counts follow each host's `weight` (largest-remainder method); zero-weight
+and `do_not_use` hosts get nothing. Re-run any time to re-split, for example
+after editing weights or growing the fleet. Run `yuj scatter` before `yuj
+submit`.
+
+## `yuj authorize`
+
+Install your SSH public key on every host so future logins are key-based (no
+passwords, no fail2ban risk). Uses each host's *current* auth once to append the
+key to `~/.ssh/authorized_keys`.
+
+```bash
+yuj authorize [--fleet PATH] [--hosts a,b,...] [--key PUBKEY | --generate PATH]
+```
+
+`--key` is the public key to install (otherwise `authorize.key` from
+`yuj.yaml`). `--generate` makes a passphrase-less keypair at the given path
+first, then installs it.
+
+Idempotent: the key is appended only if missing. Afterwards, point `key_path` at
+the private key in `fleet.csv` and delete the passwords:
+
+```bash
+yuj authorize --generate .yuj/keys/fleet_ed25519   # make + install a fresh key
+# then set key_path=.yuj/keys/fleet_ed25519 in fleet.csv and drop passwords
+```
 
 ## `yuj status`
 
@@ -124,13 +180,23 @@ yuj fleet probe [--fleet PATH] [--results-glob GLOB]
 
 ## `yuj pull`
 
-Rsync outputs from the fleet back to a central directory.
+Rsync outputs from the fleet back to a local directory. One-shot: run it
+whenever you want results, mid-job for a partial pull or after `yuj status`
+shows the batch is done.
 
 ```bash
-yuj pull [--once | --loop N] [--fleet PATH] [--dest DIR]
+yuj pull [--fleet PATH] [--hosts a,b,...] [--dest DIR] [--per-host]
 ```
 
-`--loop 60` runs every 60 seconds (press Ctrl-C to stop).
+`--dest`/`-d` is the local directory that receives results (default `results`).
+`--per-host` keeps each host's output under `dest/<host>/` instead of merging it
+all into one place.
+
+`yuj pull` doesn't poll. To pull on a schedule, re-run it under `watch` or cron:
+
+```bash
+watch -n 60 yuj pull       # pull every 60 seconds
+```
 
 ## `yuj diagnose`
 
@@ -161,19 +227,14 @@ yuj decommission HOST [--fleet PATH] [--at "WHEN"] [--remove-dir]
 
 `--remove-dir` also deletes the deploy directory (`~/yuj-run` by default).
 
-!!! warning "Job-scoped teardown"
-    Decommission removes **only yuj's** cron entry and processes, identified by
-    the job name. Any production job running on the same host is untouched.
-
-## `yuj stop HOST`
-
-Touch the stop sentinel (`/tmp/<job>.yuj.stop`) for a graceful shutdown. The
-watchdog exits on its next check interval.
+:::{admonition} Job-scoped teardown
+:class: warning
+Decommission removes **only yuj's** cron entry and processes, identified by
+the job name. Any production job running on the same host is untouched.
+:::
 
 ## Global options
 
-| Option | Description |
-|--------|-------------|
-| `--fleet PATH` | Override the fleet file (default: `fleet.csv` or `yuj.yaml:fleet`) |
-| `--hosts a,b` | Run only on named hosts; refuses `do_not_use` hosts |
-| `--help` | Show help for any command |
+`--fleet PATH` overrides the fleet file (default `fleet.csv`, or `fleet` set in
+`yuj.yaml`). `--hosts a,b` restricts the run to named hosts and refuses any
+marked `do_not_use`. `--help` shows help for any command.

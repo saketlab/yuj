@@ -10,7 +10,7 @@ from pathlib import Path
 from yuj._shell import CommandResult
 from yuj.exceptions import TransportError
 from yuj.fleet import Fleet, map_fleet
-from yuj.transport import SSHTransport
+from yuj.transport import Transport, make_transport
 
 # 30 minutes: a multi-GB payload over a slow link should not be killed
 # prematurely, but a wedged transfer should not block forever either.
@@ -46,7 +46,7 @@ class DeployResult:
 
 
 def deploy(
-    transport: SSHTransport,
+    transport: Transport,
     plan: DeployPlan,
     *,
     push_payload: bool = True,
@@ -103,7 +103,7 @@ def deploy_fleet(
     return map_fleet(
         fleet,
         lambda host: deploy(
-            SSHTransport(host, connect_timeout=connect_timeout),
+            make_transport(host, connect_timeout=connect_timeout),
             plan,
             push_payload=push_payload,
             timeout=timeout,
@@ -113,7 +113,7 @@ def deploy_fleet(
 
 
 def _send(
-    transport: SSHTransport,
+    transport: Transport,
     source: Path,
     remote_dir: str,
     excludes: Sequence[str],

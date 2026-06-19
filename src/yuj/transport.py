@@ -5,18 +5,94 @@ from __future__ import annotations
 import os
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from yuj import _shell
 from yuj._shell import CommandResult
 from yuj.exceptions import AuthError, TransportError
 from yuj.fleet import Host
 
+
+@runtime_checkable
+class Transport(Protocol):
+    """The behaviour every transport (SSH or local) provides to higher layers.
+
+    deploy/submit/scatter/pull/probe depend only on this, so a
+    :class:`~yuj.local.LocalTransport` and an :class:`SSHTransport` are
+    interchangeable.
+    """
+
+    host: Host
+
+    def run(
+        self,
+        command: str,
+        *,
+        timeout: float | None = ...,
+        input_text: str | None = ...,
+    ) -> CommandResult:
+        """Run ``command`` on the target and capture its output."""
+        ...
+
+    def check(self, *, timeout: float = ...) -> bool:
+        """Return True if the target answers a trivial command."""
+        ...
+
+    def put(
+        self,
+        local: str | Path,
+        remote: str,
+        *,
+        includes: Sequence[str] = ...,
+        excludes: Sequence[str] = ...,
+        timeout: float | None = ...,
+    ) -> CommandResult:
+        """Copy ``local`` up to ``remote`` on the target."""
+        ...
+
+    def get(
+        self,
+        remote: str,
+        local: str | Path,
+        *,
+        includes: Sequence[str] = ...,
+        excludes: Sequence[str] = ...,
+        timeout: float | None = ...,
+    ) -> CommandResult:
+        """Copy ``remote`` down to ``local``."""
+        ...
+
+
+def make_transport(
+    host: Host, *, connect_timeout: int = 20, backend: str = "subprocess"
+) -> Transport:
+    """Return the right transport for ``host``: local if it's the controller.
+
+    A host flagged ``local`` (or addressed as loopback) gets a
+    :class:`~yuj.local.LocalTransport`; everything else an :class:`SSHTransport`.
+    """
+    if host.is_local:
+        from yuj.local import LocalTransport
+
+        return LocalTransport(host)
+    return SSHTransport(host, connect_timeout=connect_timeout, backend=backend)
+
+
 _AUTH_FAIL_MARKERS = (
     "permission denied",
     "authentication failed",
     "too many authentication failures",
 )
+
+
+def is_auth_failure(text: str) -> bool:
+    """Return True if ``text`` reads like an SSH authentication failure.
+
+    Encapsulates the auth-failure marker set so callers (e.g. probe diagnosis)
+    can recognise a refused login without depending on how transport spells it.
+    """
+    lowered = text.lower()
+    return any(marker in lowered for marker in _AUTH_FAIL_MARKERS)
 
 
 class SSHTransport:
@@ -43,8 +119,6 @@ class SSHTransport:
         self.connect_timeout = connect_timeout
         self.backend = backend
 
-    # -- builders (pure, network-free, unit-testable) ----------------------
-
     def build_run_command(self, command: str) -> tuple[list[str], dict[str, str]]:
         """Return the ``(argv, env)`` to run ``command`` on the host via ssh."""
         argv = _shell.ssh_command(
@@ -54,6 +128,8 @@ class SSHTransport:
             port=self.host.port,
             key_path=self.host.key_path,
             connect_timeout=self.connect_timeout,
+            strict_host_key=self.host.strict_host_key,
+            known_hosts_file=self.host.known_hosts_file,
         )
         return self._wrap_auth(argv)
 
@@ -73,6 +149,8 @@ class SSHTransport:
             port=self.host.port,
             key_path=self.host.key_path,
             connect_timeout=self.connect_timeout,
+            strict_host_key=self.host.strict_host_key,
+            known_hosts_file=self.host.known_hosts_file,
             includes=includes,
             excludes=excludes,
         )
@@ -94,12 +172,12 @@ class SSHTransport:
             port=self.host.port,
             key_path=self.host.key_path,
             connect_timeout=self.connect_timeout,
+            strict_host_key=self.host.strict_host_key,
+            known_hosts_file=self.host.known_hosts_file,
             includes=includes,
             excludes=excludes,
         )
         return self._wrap_auth(argv)
-
-    # -- execution ---------------------------------------------------------
 
     def run(
         self,
@@ -174,8 +252,6 @@ class SSHTransport:
         self._raise_for_connection(result, "rsync get")
         return result
 
-    # -- internals ---------------------------------------------------------
-
     def _wrap_auth(self, argv: list[str]) -> tuple[list[str], dict[str, str]]:
         """Prefix sshpass and build the child env carrying the secret (if any)."""
         use_password = self.host.use_password
@@ -189,7 +265,7 @@ class SSHTransport:
         if result.ok:
             return
         stderr = result.stderr.lower()
-        if any(marker in stderr for marker in _AUTH_FAIL_MARKERS):
+        if is_auth_failure(stderr):
             raise AuthError(
                 f"authentication refused by {self.host.name} ({self.host.ip})"
                 f" during {what}",
@@ -205,11 +281,14 @@ class SSHTransport:
                 hint="install with: pip install 'yuj[paramiko]'",
             ) from exc
         client = paramiko.SSHClient()
-        # Auto-add host keys: these are ephemeral, frequently-reimaged lab boxes
-        # whose keys churn. The subprocess backend makes the same choice
-        # (StrictHostKeyChecking=no, UserKnownHostsFile=/dev/null). Documented as
-        # a caveat in the README; prefer key auth on hosts you control.
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())  # noqa: S507  # nosec B507
+        if self.host.strict_host_key:
+            known_hosts = self.host.known_hosts_file or os.path.expanduser(
+                "~/.ssh/known_hosts"
+            )
+            client.load_host_keys(known_hosts)
+            client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        else:
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())  # noqa: S507  # nosec B507
         try:
             client.connect(
                 hostname=self.host.ip,

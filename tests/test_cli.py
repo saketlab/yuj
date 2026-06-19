@@ -9,11 +9,12 @@ from typer.testing import CliRunner
 
 import yuj
 from yuj import cli as cli_module
+from yuj import cli_support as cli_support_module
 from yuj.cli import app
 from yuj.decommission import DecommissionResult
 from yuj.deploy import DeployResult
-from yuj.probe import Diagnosis, HostStatus
 from yuj.provision import ProvisionResult
+from yuj.status import Diagnosis, HostStatus
 from yuj.supervise import SubmitResult
 
 runner = CliRunner()
@@ -36,7 +37,10 @@ def _stub_probe(monkeypatch: pytest.MonkeyPatch) -> None:
             for h in fleet
         ]
 
+    # probe_fleet is called from the watch loop (cli) and from _render_status
+    # (cli_support); stub both so every status path uses the fixed statuses.
     monkeypatch.setattr(cli_module, "probe_fleet", fake_probe_fleet)
+    monkeypatch.setattr(cli_support_module, "probe_fleet", fake_probe_fleet)
 
 
 def _write_fleet(directory: Path) -> Path:
@@ -192,7 +196,7 @@ class TestDeploy:
         )
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(
-            cli_module,
+            cli_support_module,
             "deploy_fleet",
             lambda fleet, plan, **kw: {
                 h.name: DeployResult(host=h.name, ok=True, transferred=("worker.sh",))
@@ -211,7 +215,7 @@ class TestDeploy:
         (tmp_path / "yuj.yaml").write_text("fleet: fleet.csv\n")
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(
-            cli_module,
+            cli_support_module,
             "deploy_fleet",
             lambda fleet, plan, **kw: {
                 "a": DeployResult(host="a", ok=True, transferred=()),
@@ -237,7 +241,7 @@ class TestSubmit:
         self._config(tmp_path)
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(
-            cli_module,
+            cli_support_module,
             "submit_fleet",
             lambda fleet, cfg, **kw: {
                 h.name: SubmitResult(
@@ -342,7 +346,7 @@ class TestDoNotUse:
         path.write_text(
             "username,ip,name,password,do_not_use\n"
             "u,10.0.0.1,good,p,false\n"
-            "u,10.0.0.2,ambuj,p,true\n"
+            "u,10.0.0.2,charlie,p,true\n"
         )
         return path
 
@@ -358,15 +362,15 @@ class TestDoNotUse:
                 h.name: DeployResult(host=h.name, ok=True, transferred=()) for h in f
             }
 
-        monkeypatch.setattr(cli_module, "deploy_fleet", fake_deploy_fleet)
+        monkeypatch.setattr(cli_support_module, "deploy_fleet", fake_deploy_fleet)
         result = runner.invoke(app, ["deploy", "--fleet", str(fleet)])
         assert result.exit_code == 0
-        assert seen["names"] == ("good",)  # ambuj skipped
+        assert seen["names"] == ("good",)  # charlie skipped
 
     def test_explicit_do_not_use_refused(self, tmp_path: Path) -> None:
         fleet = self._fleet_with_dnu(tmp_path)
         result = runner.invoke(
-            app, ["deploy", "--fleet", str(fleet), "--hosts", "ambuj"]
+            app, ["deploy", "--fleet", str(fleet), "--hosts", "charlie"]
         )
         assert result.exit_code == 1
         assert "do_not_use" in result.output

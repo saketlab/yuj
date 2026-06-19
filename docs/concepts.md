@@ -15,8 +15,10 @@ per host:
 
 This works for shell scripts, Python, R, Julia, or any compiled binary callable from a command line.
 
-!!! warning "yuj only fits embarrassingly parallel work"
-    Each item runs on its own, on one host, with no communication between items and no shared memory. yuj never moves data between hosts mid-run. If your work needs nodes to exchange state while it runs (MPI, a shared address space, a distributed reduction, or a job where item B depends on item A's in-memory result), yuj is the wrong tool. Split the batch into independent items, or use a real cluster scheduler.
+:::{admonition} yuj only fits embarrassingly parallel work
+:class: warning
+Each item runs on its own, on one host, with no communication between items and no shared memory. yuj never moves data between hosts mid-run. If your work needs nodes to exchange state while it runs (MPI, a shared address space, a distributed reduction, or a job where item B depends on item A's in-memory result), yuj is the wrong tool. Split the batch into independent items, or use a real cluster scheduler.
+:::
 
 ## Resume by output file
 
@@ -73,6 +75,10 @@ alice,10.0.0.1,gpu-rig,p,4     # 4× weight → gets 4× more items
 alice,10.0.0.2,laptop,p,1
 ```
 
+`yuj scatter` applies this split, writing each host only its own slice so no two
+hosts process the same item. Without it, every host reads the full list (still
+correct, since resume-by-output deduplicates, just redundant).
+
 ## do_not_use
 
 Mark decommissioned or off-limits hosts with `do_not_use: true`:
@@ -85,7 +91,48 @@ alice,10.0.0.3,old-box,p,true
 - `yuj deploy` (default: all hosts) silently skips them.
 - `yuj deploy --hosts old-box` (explicit) refuses with a non-zero exit.
 
-## Provisioning (the one privileged step)
+## Quiet hours (run windows)
+
+A borrowed desktop is often only fair game at night. A **window** is a daily
+span like `19:00-09:30` during which a host may run work; outside it the
+watchdog pauses the job so the owner gets their machine back, and resumes
+automatically when the window reopens. Windows may wrap past midnight.
+
+Set a job-wide default in `yuj.yaml`, or override it per host in `fleet.csv`:
+
+```yaml
+# yuj.yaml
+active_window: "19:00-09:30"            # default for every host
+off_window_command: "pkill -f myserver" # optional extra cleanup when pausing
+```
+
+```csv
+# fleet.csv — per-host window overrides the job-wide default
+username,ip,name,password,window
+alice,10.0.0.1,lab-desk,p,19:00-09:30   # only at night
+alice,10.0.0.2,server,p,                # blank = always on
+```
+
+`off_window_command` runs when a host leaves its window, for tidying up anything
+your worker leaves behind (a model server, a scratch process) before handing the
+machine back.
+
+## Local host (the controller as a worker)
+
+The machine you launch from is often a capable worker too. Mark it `local` and
+yuj runs work on it **directly, through a local shell with no SSH**:
+
+```csv
+username,ip,name,password,local
+you,localhost,this-box,,true
+```
+
+A host is treated as local when `local` is true, or when its `ip` is
+`localhost`/`127.0.0.1`. This sidesteps the fragile "`ssh localhost` to yourself"
+path that many hardened sshd configs refuse. Every other command (`deploy`,
+`scatter`, `status`, `pull`, …) works on a local host unchanged.
+
+## Provisioning 
 
 Everything else in yuj runs as an ordinary user, but *creating* that user needs
 root. `yuj provision` is the optional first step for when you have an admin login

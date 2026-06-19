@@ -5,7 +5,7 @@ from __future__ import annotations
 from rich.console import Console
 
 from yuj._render import status_table, summary_line
-from yuj.probe import HostStatus
+from yuj.status import HostStatus
 
 
 def _statuses() -> list[HostStatus]:

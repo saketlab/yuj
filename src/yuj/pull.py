@@ -8,7 +8,7 @@ from pathlib import Path
 
 from yuj.exceptions import TransportError
 from yuj.fleet import Fleet, Host, map_fleet
-from yuj.transport import SSHTransport
+from yuj.transport import make_transport
 
 DEFAULT_PULL_TIMEOUT = 1800.0
 # Cap concurrent SSH connections. Hammering many hosts at once invites sshd
@@ -91,7 +91,7 @@ def _pull_host(
     """Pull from a single host, returning a result rather than raising."""
     dest = dest_root / host.name if per_host_subdir else dest_root
     dest.mkdir(parents=True, exist_ok=True)
-    transport = SSHTransport(host, connect_timeout=connect_timeout)
+    transport = make_transport(host, connect_timeout=connect_timeout)
     # Trailing slash on the source: pull the directory's *contents*, not the dir.
     source = remote_dir.rstrip("/") + "/"
     try:

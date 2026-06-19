@@ -9,7 +9,11 @@ TEMPLATES = ("bare", "python", "r")
 _FLEET_CSV = """\
 # yuj fleet inventory: one opportunistic SSH target per row.
 # Columns: username,ip,name,password   (password optional; prefer key_path)
-# Optional extra columns: key_path,weight,port,do_not_use
+# Optional extra columns: key_path,weight,port,do_not_use,window,local
+#   window: per-host run window "HH:MM-HH:MM" (wraps midnight), e.g. 19:00-09:30
+#   for a borrowed desktop usable only at night. Blank = always on.
+#   local: true if this host IS the controller (runs work directly, no SSH);
+#   also auto-detected when ip is localhost/127.0.0.1.
 # KEEP THIS FILE OUT OF VERSION CONTROL; it holds credentials.
 username,ip,name,password
 you,10.0.0.1,lab-desk-1,
@@ -25,6 +29,9 @@ job: mybatch
 remote_dir: yuj-run
 results_glob: ~/yuj-run/results/*
 stall_min: 90
+# active_window: "19:00-09:30"   # job-wide run window; per-host 'window' in
+#                                # fleet.csv overrides it (e.g. always-on boxes).
+# off_window_command: "pkill -f myserver"  # extra cleanup when leaving the window
 # work_command receives the item as its last argument on each invocation:
 work_command: bash $HOME/yuj-run/worker.sh
 # input_file: items.txt  # one item per line; each item is passed as $1

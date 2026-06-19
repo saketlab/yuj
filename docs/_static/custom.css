@@ -1,0 +1,96 @@
+:root {
+  --yuj-radius: 12px;
+  --yuj-radius-sm: 8px;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "kern", "liga", "calt";
+  letter-spacing: -0.003em;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-weight: 600;
+  letter-spacing: -0.021em;
+}
+
+h1 {
+  letter-spacing: -0.024em;
+}
+
+article {
+  line-height: 1.65;
+}
+
+a {
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+code.literal,
+.rst-content code {
+  border-radius: 6px;
+  padding: 0.12em 0.4em;
+}
+
+.highlight {
+  border-radius: var(--yuj-radius);
+  border: 1px solid var(--color-background-border);
+}
+
+.highlight pre {
+  border-radius: var(--yuj-radius);
+}
+
+.admonition,
+details.sd-dropdown,
+details {
+  border-radius: var(--yuj-radius);
+  overflow: hidden;
+}
+
+.sd-tab-set > label {
+  border-radius: var(--yuj-radius-sm) var(--yuj-radius-sm) 0 0;
+  font-weight: 500;
+  letter-spacing: -0.008em;
+}
+
+.sd-tab-content {
+  border-radius: 0 0 var(--yuj-radius-sm) var(--yuj-radius-sm);
+}
+
+table.docutils {
+  border-radius: var(--yuj-radius);
+  border: 1px solid var(--color-background-border);
+  overflow: hidden;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+table.docutils th {
+  background-color: var(--color-background-secondary);
+  font-weight: 600;
+  letter-spacing: -0.008em;
+}
+
+.sd-btn {
+  border-radius: 980px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+::selection {
+  background-color: color-mix(in srgb, var(--color-brand-primary) 22%, transparent);
+}
+
+.sidebar-tree .reference {
+  border-radius: var(--yuj-radius-sm);
+}

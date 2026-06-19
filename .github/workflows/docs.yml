@@ -3,21 +3,49 @@ name: Docs
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  deploy:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-24.04
+    env:
+      HOSTINGER_REMOTE_PATH: /var/www/r-pkgdown/yuj/docs
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - name: Check out repository
+        uses: actions/checkout@v7.0.0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
-      - run: uv python install 3.12
-      - run: uv sync --extra docs
-      - run: uv run mkdocs build --strict
-      - name: Deploy to GitHub Pages
-        run: uv run mkdocs gh-deploy --force
+          version: "0.9.12"
+
+      - name: Set up Python
+        run: uv python install 3.14
+
+      - name: Install docs dependencies
+        run: uv sync --locked --python 3.14 --extra docs
+
+      - name: Build docs
+        run: uv run --frozen sphinx-build -W --keep-going -b html -d /tmp/doctrees docs site
+
+      - name: Deploy to Hostinger
+        if: github.event_name != 'pull_request' && env.HOSTINGER_REMOTE_PATH != ''
+        uses: burnett01/rsync-deployments@8.0.0
+        with:
+          switches: -avzr --delete
+          path: site/
+          remote_path: ${{ env.HOSTINGER_REMOTE_PATH }}
+          remote_host: ${{ secrets.HOSTINGER_HOST }}
+          remote_port: ${{ secrets.HOSTINGER_PORT }}
+          remote_user: ${{ secrets.HOSTINGER_USER }}
+          remote_key: ${{ secrets.HOSTINGER_SSH_KEY }}

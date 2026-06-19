@@ -29,8 +29,10 @@ alice,10.0.0.1,lab-desk-1,s3cret
 alice,10.0.0.2,lab-desk-2,
 ```
 
-!!! note "Key-based auth"
-    Leave `password` empty and add `key_path=/home/alice/.ssh/id_ed25519` to avoid fail2ban risk and skip `sshpass`.
+:::{admonition} Key-based auth
+:class: note
+Leave `password` empty and add `key_path=/home/alice/.ssh/id_ed25519` to avoid fail2ban risk and skip `sshpass`.
+:::
 
 ## 3. Write your worker
 
@@ -46,13 +48,6 @@ def main() -> None:
     (out_dir / f"{item}.out").write_text(result)
 ```
 
-The contract:
-
-| Rule | Why |
-|------|-----|
-| Item is the last CLI argument | yuj's run-loop appends it |
-| Output goes to `$YUJ_OUT/<item><suffix>` | yuj's resume check looks here |
-| Catch exceptions per-item | one bad item shouldn't abort the batch |
 
 ## 4. Bootstrap
 
@@ -74,21 +69,29 @@ yuj bootstrap
 
 Re-running bootstrap on an already-configured host is a no-op.
 
-## 5. Deploy
+## 5. Deploy and submit
+
+`yuj run` does both in one step (`yuj deploy && yuj submit`):
 
 ```bash
-yuj deploy
+yuj run
 ```
 
-## 6. Submit
+- **deploy** rsyncs your code (and any heavy `payload`) to every host.
+- **submit** installs the self-healing watchdog and a cron entry, then starts the job.
+
+The watchdog relaunches your worker if it dies or stalls; the cron entry restarts the watchdog after a reboot, with no controller involvement needed. (Run `yuj deploy` and `yuj submit` separately if you'd rather stage them.)
+
+:::{admonition} Give each host its own work
+:class: tip
+By default every host reads the full `items.txt`. That's safe (yuj skips items whose output already exists) but redundant. To split the work so each host gets only its share, weighted by capacity, run `yuj scatter` before submitting:
 
 ```bash
-yuj submit
+yuj scatter --input items.txt    # writes each host its own slice
 ```
+:::
 
-Installs the watchdog and cron on each host and starts the job. The watchdog relaunches your worker if it dies or stalls. A cron entry restarts the watchdog after a reboot, with no controller involvement needed.
-
-## 7. Watch
+## 6. Watch
 
 ```bash
 yuj status --watch 30       # refresh every 30 seconds (Ctrl-C to exit)
@@ -105,16 +108,16 @@ yuj status --watch 30       # refresh every 30 seconds (Ctrl-C to exit)
 2/2 up · 1 producing · 0 stalled · 42 outputs · 0 with owner present
 ```
 
-## 8. Pull results
+## 7. Pull results
 
 ```bash
-yuj pull --loop 60          # pull every 60 seconds, Ctrl-C to stop
-yuj pull                    # or just once
+yuj pull                    # pull once into ./results/
+watch -n 60 yuj pull        # or re-pull every 60 seconds
 ```
 
-Results land in `central/` by default.
+Results merge into `results/` by default (`--dest DIR` to change it, `--per-host` to keep them in `results/<host>/`). Pull as often as you like, mid-job for partial results or once at the end.
 
-## 9. Decommission
+## 8. Decommission
 
 ```bash
 yuj decommission lab-desk-1                         # now

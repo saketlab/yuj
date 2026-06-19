@@ -13,7 +13,7 @@ from yuj import _shell
 from yuj._shell import CommandResult
 from yuj.exceptions import AuthError, TransportError
 from yuj.fleet import Host
-from yuj.transport import SSHTransport
+from yuj.transport import SSHTransport, is_auth_failure
 
 PW_HOST = Host(name="pw", ip="10.0.0.1", user="saket", password="s3cret")
 KEY_HOST = Host(name="key", ip="10.0.0.2", user="saket", key_path="/home/saket/.ssh/id")
@@ -58,6 +58,19 @@ class TestBuilders:
         assert "--include=*.csv" in argv
         assert "--exclude=*.log" in argv
 
+    def test_strict_host_key_propagates(self) -> None:
+        host = Host(
+            name="strict",
+            ip="10.0.0.3",
+            user="saket",
+            key_path="/k",
+            strict_host_key=True,
+            known_hosts_file="/tmp/known_hosts",
+        )
+        argv, _env = SSHTransport(host).build_run_command("echo hi")
+        assert "StrictHostKeyChecking=yes" in argv
+        assert "UserKnownHostsFile=/tmp/known_hosts" in argv
+
     def test_unknown_backend_raises(self) -> None:
         with pytest.raises(TransportError, match="unknown transport backend"):
             SSHTransport(PW_HOST, backend="carrier-pigeon")
@@ -96,7 +109,6 @@ class TestRunExecution:
     def test_nonzero_non_auth_does_not_raise(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # A remote command exiting non-zero (not a connection failure) returns.
         monkeypatch.setattr(
             _shell, "run", lambda *a, **k: CommandResult(2, "", "ls: no such file")
         )
@@ -142,3 +154,18 @@ class TestTransfersExecution:
         monkeypatch.setattr(_shell, "run", lambda *a, **k: CommandResult(0, "", ""))
         result = SSHTransport(PW_HOST).put("l/", "r/")
         assert result.ok
+
+
+class TestIsAuthFailure:
+    def test_matches_each_marker_case_insensitively(self) -> None:
+        for text in (
+            "Permission denied (publickey,password).",
+            "ssh: Authentication failed.",
+            "Received disconnect: Too many authentication failures",
+        ):
+            assert is_auth_failure(text) is True
+            assert is_auth_failure(text.lower()) is True
+
+    def test_non_auth_message_is_false(self) -> None:
+        assert is_auth_failure("ssh: connect to host: Connection refused") is False
+        assert is_auth_failure("") is False
