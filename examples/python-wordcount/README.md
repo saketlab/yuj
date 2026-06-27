@@ -1,7 +1,7 @@
 # yuj example: Python word-count
 
 Fetch web pages on borrowed machines and count words per page. The worker is a
-single stdlib-only Python script — swap in your own code.
+single stdlib-only Python script; swap in your own code.
 
 No Python/Conda/root needed on the remote hosts (yuj installs `uv`).
 

@@ -1,7 +1,7 @@
 # yuj example: R analysis
 
-Run an R script per item across borrowed machines — **no root, no pre-installed
-R**. yuj bootstraps R via [micromamba](https://mamba.readthedocs.io/) and
+Run an R script per item across borrowed machines, with **no root and no
+pre-installed R**. yuj bootstraps R via [micromamba](https://mamba.readthedocs.io/) and
 installs packages from conda-forge and CRAN.
 
 ```bash

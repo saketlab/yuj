@@ -2,7 +2,7 @@
 
 The machine running yuj is often also a capable worker (a 96 GB GPU box that
 happens to be where you launch from). Tunnelling to it over ``ssh localhost`` is
-fragile — it depends on the host accepting key auth to itself, which many
+fragile: it depends on the host accepting key auth to itself, which many
 hardened sshd configs refuse. A host marked ``local`` (or pointed at
 ``localhost``/``127.0.0.1``) uses this transport instead: commands run through a
 local shell and files are copied with local ``rsync``. The interface matches

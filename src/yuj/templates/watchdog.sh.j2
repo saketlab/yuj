@@ -14,9 +14,25 @@ LOG="$LOGDIR/${JOB}.watchdog.log"
 INTERVAL={{ interval_sec }}
 STALL_MIN={{ stall_min }}
 GRACE={{ grace_sec }}
+PGID_FILE=".${JOB}.run.pgid"   # process-group id of the most recent run
 mkdir -p "$LOGDIR"
 
 log() { echo "$(date '+%F %T') $*" >>"$LOG"; }
+
+# Kill a run and all its descendants. Each launch is its own process-group
+# leader (setsid), so killing the group reaps workers and their children too;
+# otherwise orphans pile up across relaunches until the host OOMs. Falls back to
+# a pattern kill when there's no pgid (e.g. hosts without setsid, like macOS).
+stop_run() {
+    local pgid
+    pgid=$(cat "$PGID_FILE" 2>/dev/null)
+    if [ -n "$pgid" ] && kill -0 "-$pgid" 2>/dev/null; then
+        kill -TERM "-$pgid" 2>/dev/null
+        sleep 3
+        kill -KILL "-$pgid" 2>/dev/null
+    fi
+    pkill -f "[b]ash $RUN" 2>/dev/null
+}
 {% if has_window %}
 # Active window: only run between {{ window_label }} (minutes since midnight,
 # wrapping past midnight when start > end). Outside it the work loop is paused
@@ -34,7 +50,7 @@ within_window() {
     fi
 }
 pause_work() {
-    pkill -f "[b]ash $RUN" 2>/dev/null
+    stop_run
 {% if off_window_command %}    {{ off_window_command }}
 {% endif %}
 }
@@ -56,8 +72,18 @@ newest_age_min() {
 relaunch() {
     local ts
     ts=$(date +%Y%m%d_%H%M%S)
-    nohup bash "$RUN" </dev/null >>"$LOGDIR/${JOB}.run_${ts}.log" 2>&1 &
-    log "relaunched $RUN -> ${JOB}.run_${ts}.log"
+    # Reap any survivors from the previous run's group before starting fresh.
+    stop_run
+    if command -v setsid >/dev/null 2>&1; then
+        # New session: PGID == wrapper PID, so stop_run can kill the whole group.
+        setsid bash "$RUN" </dev/null >>"$LOGDIR/${JOB}.run_${ts}.log" 2>&1 &
+        echo "$!" >"$PGID_FILE"
+        log "relaunched $RUN (pgid $!) -> ${JOB}.run_${ts}.log"
+    else
+        nohup bash "$RUN" </dev/null >>"$LOGDIR/${JOB}.run_${ts}.log" 2>&1 &
+        rm -f "$PGID_FILE"
+        log "relaunched $RUN (no setsid; pattern-kill only) -> ${JOB}.run_${ts}.log"
+    fi
 }
 
 # Single-instance guard: kill any other watchdog for this job, keep self.
@@ -104,7 +130,7 @@ while [ ! -f "$STOP" ]; do
             log "stale (age=${age}m) but within grace; waiting"
         else
             log "ACTION: STALL age=${age}m >= ${STALL_MIN}m -> kill + relaunch"
-            pkill -f "[b]ash $RUN" 2>/dev/null
+            stop_run
             sleep 3
             relaunch
             last_action=$(date +%s)

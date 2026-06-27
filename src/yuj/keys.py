@@ -1,6 +1,6 @@
 """SSH public-key validation shared by authorize and provision.
 
-The two callers transmit a key differently — ``authorize`` pipes it over stdin
+The two callers transmit a key differently. ``authorize`` pipes it over stdin
 (any comment is fine), while ``provision`` embeds it single-quoted in a generated
 remote script (so it must be shell-safe). Both notions of "a usable public key"
 live here so they agree on the recognised key types.

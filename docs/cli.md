@@ -65,7 +65,7 @@ yuj bootstrap [--fleet PATH] [--hosts a,b,...] [--env-manager uv|pixi|micromamba
 ```
 
 `--env-manager` picks which manager to install. `--extras` takes a comma-list of
-named bundles — `R`, `OLLAMA`, `SHELLCHECK`, `RCLONE`. `--env-file` points at
+named bundles: `R`, `OLLAMA`, `SHELLCHECK`, `RCLONE`. `--env-file` points at
 an environment spec already deployed with your project. `--from-tarball` uses a
 pre-staged remote tarball instead of fetching an installer live, which is the
 reproducible/offline path for pinned bootstrap assets. `--check` does a dry run,
@@ -119,7 +119,7 @@ yuj scatter [--fleet PATH] [--hosts a,b,...] [--input LIST]
 
 `--input` is the work list to split (otherwise `scatter.input` from `yuj.yaml`).
 `--into` is the per-host filename it writes (otherwise `scatter.into`, then
-`input_file`). `--exclude` points at a file of items to drop before splitting —
+`input_file`). `--exclude` points at a file of items to drop before splitting,
 handy for skipping work that's already done.
 
 Item counts follow each host's `weight` (largest-remainder method); zero-weight

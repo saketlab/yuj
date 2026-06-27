@@ -3,7 +3,7 @@
 Holds the shared Rich consoles plus the config-building, fleet-loading, and
 fleet-wide orchestration helpers. Keeping these out of ``cli.py`` lets that
 module stay a thin surface of Typer command definitions, so it changes only for
-CLI-ergonomic reasons — not whenever the config shape or an operation's wiring
+CLI-ergonomic reasons, not whenever the config shape or an operation's wiring
 moves.
 """
 
