@@ -556,7 +556,7 @@ def rescue(
         ),
     ] = None,
 ) -> None:
-    """Revive OOM-melted hosts: retry through transient sshd windows, kill the orphans."""
+    """Revive OOM-melted hosts: retry transient sshd windows, kill the orphans."""
     fleet = _load(fleet_path)[0]
     pats = tuple(p.strip() for p in pattern.split(",") if p.strip()) if pattern else ()
     skipped: list[tuple[str, bool, str]] = []
