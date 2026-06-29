@@ -43,8 +43,7 @@ def _inner_kill(pattern: Sequence[str]) -> str:
 
 
 def _rescue_payload(*, strip_cron: bool, pattern: Sequence[str]) -> str:
-    """Strip the relaunch cron, detach the kill.
-    """
+    """Strip the relaunch cron, detach the kill."""
     inner = _inner_kill(pattern)
     cron = "crontab -r 2>/dev/null; " if strip_cron else ""
     detach = f'setsid sh -c {shlex.quote(inner)} _ "$me" "$parent"'
@@ -111,8 +110,7 @@ def rescue_host(
     pattern: Sequence[str] = (),
     sleep_fn: Callable[[float], None] = time.sleep,
 ) -> RescueResult:
-    """Hammer ``host`` until a RAM window lets sshd fork, then drain the orphans.
-    """
+    """Hammer ``host`` until a RAM window lets sshd fork, then drain the orphans."""
     payload = _rescue_payload(strip_cron=strip_cron, pattern=tuple(pattern))
     for used in range(1, attempts + 1):
         opened, load_before = _try_window(host, payload, connect_timeout)
@@ -153,8 +151,7 @@ def rescue_fleet(
     pattern: Sequence[str] = (),
     max_workers: int = DEFAULT_MAX_WORKERS,
 ) -> list[RescueResult]:
-    """Rescue every host in ``fleet`` concurrently, in fleet order.
-    """
+    """Rescue every host in ``fleet`` concurrently, in fleet order."""
     out = map_fleet(
         fleet,
         lambda host: rescue_host(
