@@ -79,18 +79,25 @@ def _load(fleet_path: Path | None) -> tuple[Fleet, ProjectConfig]:
     return fleet, config
 
 
-def _select_hosts(fleet: Fleet, hosts: str | None) -> Fleet:
-    """Resolve the --hosts selection, refusing explicitly-named do_not_use hosts."""
+def _select_hosts(
+    fleet: Fleet, hosts: str | None, *, allow_do_not_use: bool = False
+) -> Fleet:
+    """Resolve the --hosts selection, refusing explicitly-named do_not_use hosts.
+
+    ``allow_do_not_use`` lifts that refusal for commands that deliberately target
+    flagged-down hosts (e.g. ``rescue``, whose whole job is reviving them).
+    """
     if not hosts or hosts.strip().lower() == "all":
-        return fleet.usable
+        return fleet if allow_do_not_use else fleet.usable
     names = [n.strip() for n in hosts.split(",") if n.strip()]
     try:
         selected = fleet.select(names)
     except YujError as exc:
         _die(str(exc))
-    refused = [h.name for h in selected if h.do_not_use]
-    if refused:
-        _die(f"{', '.join(refused)} is marked do_not_use; refusing.")
+    if not allow_do_not_use:
+        refused = [h.name for h in selected if h.do_not_use]
+        if refused:
+            _die(f"{', '.join(refused)} is marked do_not_use; refusing.")
     return selected
 
 

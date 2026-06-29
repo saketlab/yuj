@@ -40,6 +40,12 @@ from yuj.provision import (
     provision_fleet,
 )
 from yuj.pull import pull_once
+from yuj.rescue import (
+    DEFAULT_ATTEMPTS,
+    DEFAULT_CONNECT_TIMEOUT,
+    DEFAULT_INTERVAL,
+    rescue_fleet,
+)
 from yuj.scaffolds import scaffold_files
 from yuj.scatter import read_items, scatter_fleet
 from yuj.transport import make_transport
@@ -520,6 +526,72 @@ def diagnose(
     selected = _select_hosts(fleet, hosts)
     diagnoses = diagnose_fleet(selected, timeout=timeout)
     console.print(diagnosis_table(diagnoses))
+
+
+@app.command()
+def rescue(
+    fleet_path: _FleetOpt = None,
+    hosts: _HostsOpt = None,
+    attempts: Annotated[
+        int, typer.Option(help="Max connection attempts per host.")
+    ] = DEFAULT_ATTEMPTS,
+    interval: Annotated[
+        float, typer.Option(help="Seconds to wait between attempts.")
+    ] = DEFAULT_INTERVAL,
+    connect_timeout: Annotated[
+        int, typer.Option(help="Per-attempt SSH connect timeout (s).")
+    ] = DEFAULT_CONNECT_TIMEOUT,
+    keep_cron: Annotated[
+        bool,
+        typer.Option(
+            "--keep-cron", help="Don't strip the relaunch cron while rescuing."
+        ),
+    ] = False,
+    pattern: Annotated[
+        str | None,
+        typer.Option(
+            "--pattern",
+            help="Comma-separated process names to kill "
+            "(default: all the SSH user's processes).",
+        ),
+    ] = None,
+) -> None:
+    """Revive OOM-melted hosts: retry through transient sshd windows, kill the orphans.
+    """
+    fleet = _load(fleet_path)[0]
+    pats = tuple(p.strip() for p in pattern.split(",") if p.strip()) if pattern else ()
+    skipped: list[tuple[str, bool, str]] = []
+    if hosts and hosts.strip().lower() != "all":
+        targets = _select_hosts(fleet, hosts, allow_do_not_use=True)
+    else:
+        diagnoses = diagnose_fleet(fleet)
+        skipped = [
+            (d.name, True, "healthy, skipped") for d in diagnoses if d.status == "ok"
+        ]
+        bad = [d.name for d in diagnoses if d.status != "ok"]
+        if not bad:
+            console.print("[green]all hosts reachable — nothing to rescue[/green]")
+            return
+        targets = fleet.select(bad)
+    results = rescue_fleet(
+        targets,
+        attempts=attempts,
+        interval=interval,
+        connect_timeout=connect_timeout,
+        strip_cron=not keep_cron,
+        pattern=pats,
+    )
+    rows = skipped + [
+        (
+            r.host,
+            r.rescued,
+            f"load {r.load_before}→{r.load_after} in {r.attempts} attempt(s)"
+            if r.rescued
+            else (r.error or "failed"),
+        )
+        for r in results
+    ]
+    _print_op_table("rescue", sorted(rows))
 
 
 @app.command()
