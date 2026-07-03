@@ -11,7 +11,7 @@ import typer
 from rich.live import Live
 
 from yuj import __version__
-from yuj._render import diagnosis_table, status_table
+from yuj._render import diagnosis_table, status_table, storage_table
 from yuj.authorize import authorize_fleet
 from yuj.bootstrap import BootstrapConfig, bootstrap_fleet
 from yuj.cli_support import (
@@ -48,6 +48,7 @@ from yuj.rescue import (
 )
 from yuj.scaffolds import scaffold_files
 from yuj.scatter import read_items, scatter_fleet
+from yuj.storage import storage_fleet
 from yuj.transport import make_transport
 
 app = typer.Typer(
@@ -526,6 +527,28 @@ def diagnose(
     selected = _select_hosts(fleet, hosts)
     diagnoses = diagnose_fleet(selected, timeout=timeout)
     console.print(diagnosis_table(diagnoses))
+
+
+@app.command()
+def storage(
+    fleet_path: _FleetOpt = None,
+    hosts: _HostsOpt = None,
+    work_dir: Annotated[
+        str | None,
+        typer.Option(
+            "--work-dir",
+            help="Path whose free space to report (else remote_dir). Use ~ if the "
+            "deploy dir doesn't exist yet.",
+        ),
+    ] = None,
+    timeout: Annotated[float, typer.Option(help="Per-host probe timeout (s).")] = 20.0,
+) -> None:
+    """Show free space where the job writes (★), plus every partition on each host."""
+    fleet, config = _load(fleet_path)
+    fleet = _select_hosts(fleet, hosts)
+    target = work_dir or config.remote_dir
+    stores = storage_fleet(fleet, work_dir=target, timeout=timeout)
+    console.print(storage_table(stores))
 
 
 @app.command()

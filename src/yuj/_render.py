@@ -8,6 +8,7 @@ from rich.table import Table
 from rich.text import Text
 
 from yuj.status import DEFAULT_STALL_MIN, Diagnosis, HostStatus
+from yuj.storage import HostStorage
 
 _DIAGNOSIS_STYLE = {
     "ok": ("✓ ok", "bold green"),
@@ -122,6 +123,64 @@ def diagnosis_table(
     for d in diagnoses:
         label, style = _DIAGNOSIS_STYLE.get(d.status, (d.status, "dim"))
         table.add_row(d.name, d.ip, Text(label, style=style), d.detail)
+    return table
+
+
+def _fmt_kb(kb: int | None) -> str:
+    """Human-friendly size from KiB blocks (K/M/G/T)."""
+    if kb is None:
+        return "-"
+    size = float(kb)
+    for unit in ("K", "M", "G", "T"):
+        if size < 1024 or unit == "T":
+            return (
+                f"{size:.0f}{unit}"
+                if size >= 10 or unit == "K"
+                else f"{size:.1f}{unit}"
+            )
+        size /= 1024
+    return f"{size:.0f}T"
+
+
+def _work_row(store: HostStorage) -> Text:
+    """Header cell: free space at the work dir, green if known, yellow if not."""
+    if store.work_avail_kb is not None:
+        return Text(f"{_fmt_kb(store.work_avail_kb)} free at {store.work_dir}", "green")
+    return Text(f"? free at {store.work_dir or '?'} (path missing?)", "yellow")
+
+
+def storage_table(
+    stores: Sequence[HostStorage], *, title: str = "yuj storage"
+) -> Table:
+    """One row per (host, partition); ★ marks the partition the job writes into."""
+    table = Table(title=title, header_style="bold cyan")
+    table.add_column("host", style="bold")
+    table.add_column("filesystem", style="dim")
+    table.add_column("mount")
+    table.add_column("size", justify="right")
+    table.add_column("avail", justify="right")
+    table.add_column("use%", justify="right")
+    table.add_column("work", justify="center")
+    for store in stores:
+        if not store.reachable:
+            detail = (store.error or "unreachable").splitlines()[0][:60]
+            table.add_row(store.name, Text(detail, style="red"), "", "", "", "", "")
+            continue
+        table.add_row(
+            Text(store.name, style="bold"), _work_row(store), "", "", "", "", ""
+        )
+        for part in store.partitions:
+            is_work = store.is_work_partition(part)
+            style = "green" if is_work else "dim"
+            table.add_row(
+                "",
+                part.filesystem,
+                part.mount,
+                _fmt_kb(part.size_kb),
+                Text(_fmt_kb(part.avail_kb), style=style),
+                f"{part.use_pct}%",
+                Text("★", style="bold green") if is_work else "",
+            )
     return table
 
 

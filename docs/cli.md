@@ -214,6 +214,32 @@ yuj diagnose [--fleet PATH] [--hosts a,b,...]
 | `sshd down` | Port 22 closed / refused |
 | `net down` | No route / timeout |
 
+## `yuj storage`
+
+Show disk headroom on each host: free space where the job writes, plus every
+mounted partition. Use it before `deploy` to spot hosts with a full `/` or no
+room for outputs.
+
+```bash
+yuj storage [--fleet PATH] [--hosts a,b,...] [--work-dir PATH]
+```
+
+The green header line per host reports free space at the work directory
+(`remote_dir` from `yuj.yaml` by default). A `★` in the **work** column marks
+the partition that directory lives on, so you can see the disk your outputs land
+on rather than reading `/home` off the wrong row.
+
+Pass `--work-dir ~` if you haven't deployed yet. `df` can't measure a
+`remote_dir` that doesn't exist, so it shows `? free at ... (path missing?)`.
+
+```text
+┃ host      ┃ filesystem     ┃ mount ┃ size ┃ avail ┃ use% ┃ work ┃
+┡━━━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━╇━━━━━━┩
+│ box       │ 1.5T free at ~ │       │      │       │      │      │
+│           │ /dev/nvme0n1p3 │ /     │ 232G │  206G │   7% │      │
+│           │ /dev/sda1      │ /home │ 1.8T │  1.5T │   4% │  ★   │
+```
+
 ## `yuj decommission`
 
 Remove the yuj job from a host, now or scheduled.
