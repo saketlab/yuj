@@ -169,15 +169,15 @@ def _context(cfg: SuperviseConfig) -> dict[str, object]:
 
 
 def render_run(cfg: SuperviseConfig) -> str:
-    return _ENV.get_template("run_chunk.sh.j2").render(**_context(cfg))
+    return str(_ENV.get_template("run_chunk.sh.j2").render(**_context(cfg)))
 
 
 def render_watchdog(cfg: SuperviseConfig) -> str:
-    return _ENV.get_template("watchdog.sh.j2").render(**_context(cfg))
+    return str(_ENV.get_template("watchdog.sh.j2").render(**_context(cfg)))
 
 
 def render_ensure(cfg: SuperviseConfig) -> str:
-    return _ENV.get_template("ensure.sh.j2").render(**_context(cfg))
+    return str(_ENV.get_template("ensure.sh.j2").render(**_context(cfg)))
 
 
 def rendered_scripts(cfg: SuperviseConfig) -> dict[str, str]:

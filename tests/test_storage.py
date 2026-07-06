@@ -61,6 +61,23 @@ class TestParseStorage:
         assert s.is_work_partition(s.partitions[0]) is False
 
 
+class TestStorageSummary:
+    def test_totals_only_work_partitions(self) -> None:
+        from yuj._render import storage_summary
+        from yuj.storage import HostStorage
+
+        stores = [
+            HostStorage("a", "1", True, work_avail_kb=1_000_000),  # ~1G
+            HostStorage("b", "2", True, work_avail_kb=3_000_000),  # ~3G
+            HostStorage("c", "3", True, work_avail_kb=None),  # work dir missing
+            HostStorage("d", "4", False, error="down"),
+        ]
+        line = storage_summary(stores)
+        assert "3.8G free across 2 host(s)" in line
+        assert "missing on c" in line
+        assert "unreachable: d" in line
+
+
 class TestDiskCommand:
     def test_rejects_unsafe_work_dir(self) -> None:
         with pytest.raises(YujError):

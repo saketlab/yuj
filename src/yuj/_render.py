@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from rich.table import Table
 from rich.text import Text
 
+from yuj.exec_cmd import ExecResult
 from yuj.status import DEFAULT_STALL_MIN, Diagnosis, HostStatus
 from yuj.storage import HostStorage
 
@@ -149,6 +150,20 @@ def _work_row(store: HostStorage) -> Text:
     return Text(f"? free at {store.work_dir or '?'} (path missing?)", "yellow")
 
 
+def storage_summary(stores: Sequence[HostStorage]) -> str:
+    """Total free space at the work dirs, and which hosts were left out of it."""
+    total = sum(s.work_avail_kb or 0 for s in stores if s.work_avail_kb is not None)
+    counted = [s for s in stores if s.work_avail_kb is not None]
+    unknown = [s.name for s in stores if s.reachable and s.work_avail_kb is None]
+    down = [s.name for s in stores if not s.reachable]
+    line = f"{_fmt_kb(total)} free across {len(counted)} host(s)"
+    if unknown:
+        line += f"; work dir missing on {', '.join(unknown)}"
+    if down:
+        line += f"; unreachable: {', '.join(down)}"
+    return line
+
+
 def storage_table(
     stores: Sequence[HostStorage], *, title: str = "yuj storage"
 ) -> Table:
@@ -206,3 +221,57 @@ def summary_line(
         f"{up}/{n_hosts} up · {producing} producing · {stalled} stalled"
         f" · {out_str} outputs · {owners} with owner present"
     )
+
+
+def _exec_preview(result: ExecResult, width: int = 90) -> str:
+    """One-line preview: last non-empty stdout line, else stderr, else the error."""
+    if result.error:
+        return result.error
+    for stream in (result.stdout, result.stderr):
+        lines = [ln for ln in stream.splitlines() if ln.strip()]
+        if lines:
+            text = lines[-1].strip()
+            return text if len(text) <= width else text[: width - 1] + "…"
+    return ""
+
+
+def exec_table(results: Sequence[ExecResult], *, title: str = "yuj exec") -> Table:
+    """One row per host: name, exit code, one-line output preview."""
+    table = Table(title=title, header_style="bold cyan")
+    table.add_column("host", style="bold")
+    table.add_column("exit", justify="right")
+    table.add_column("output")
+    for r in results:
+        if not r.reachable:
+            code, style = "unreachable", "red"
+        elif r.ok:
+            code, style = "0", "green"
+        else:
+            code, style = str(r.returncode), "yellow"
+        table.add_row(r.name, f"[{style}]{code}[/{style}]", _exec_preview(r))
+    return table
+
+
+def exec_raw(results: Sequence[ExecResult]) -> str:
+    """Per-host block with the full stdout/stderr and exit code."""
+    blocks: list[str] = []
+    for r in results:
+        lines = [f"[bold]===== {r.name} ({r.ip}) =====[/bold]"]
+        if r.error:
+            lines.append(f"[red]{r.error}[/red]")
+        else:
+            if r.stdout.strip():
+                lines.append(r.stdout.rstrip())
+            if r.stderr.strip():
+                lines.append(f"[yellow]{r.stderr.rstrip()}[/yellow]")
+            lines.append(f"[dim]exit {r.returncode}[/dim]")
+        blocks.append("\n".join(lines))
+    return "\n".join(blocks)
+
+
+def exec_summary(results: Sequence[ExecResult]) -> str:
+    """One-line tally: ok / nonzero-exit / unreachable."""
+    ok = sum(1 for r in results if r.ok)
+    down = sum(1 for r in results if not r.reachable)
+    failed = len(results) - ok - down
+    return f"{ok} ok · {failed} nonzero · {down} unreachable  (of {len(results)})"

@@ -11,7 +11,15 @@ import typer
 from rich.live import Live
 
 from yuj import __version__
-from yuj._render import diagnosis_table, status_table, storage_table
+from yuj._render import (
+    diagnosis_table,
+    exec_raw,
+    exec_summary,
+    exec_table,
+    status_table,
+    storage_summary,
+    storage_table,
+)
 from yuj.authorize import authorize_fleet
 from yuj.bootstrap import BootstrapConfig, bootstrap_fleet
 from yuj.cli_support import (
@@ -30,6 +38,7 @@ from yuj.cli_support import (
 from yuj.decommission import decommission as _decommission
 from yuj.decommission import schedule_decommission as _schedule_decommission
 from yuj.exceptions import YujError
+from yuj.exec_cmd import exec_fleet
 from yuj.keys import read_public_key
 from yuj.probe import diagnose_fleet, probe_fleet
 from yuj.provision import (
@@ -549,6 +558,40 @@ def storage(
     target = work_dir or config.remote_dir
     stores = storage_fleet(fleet, work_dir=target, timeout=timeout)
     console.print(storage_table(stores))
+    console.print(storage_summary(stores))
+
+
+@app.command("exec")
+def exec_cmd(
+    command: Annotated[
+        str, typer.Argument(help="Shell command to run on every host (quote it).")
+    ],
+    fleet_path: _FleetOpt = None,
+    hosts: _HostsOpt = None,
+    include_down: Annotated[
+        bool,
+        typer.Option("--include-down", help="Also target hosts flagged do_not_use."),
+    ] = False,
+    timeout: Annotated[
+        float, typer.Option(help="Per-host command timeout (s).")
+    ] = 60.0,
+    raw: Annotated[
+        bool,
+        typer.Option(
+            "--raw", help="Print each host's full stdout/stderr, not a table."
+        ),
+    ] = False,
+) -> None:
+    """Run a shell command on every host in parallel.
+
+    Runs in each host's default shell (quote the command). Targets usable hosts
+    by default; ``--include-down`` also includes hosts flagged do_not_use.
+    """
+    fleet = _load(fleet_path)[0]
+    selected = _select_hosts(fleet, hosts, allow_do_not_use=include_down)
+    results = exec_fleet(selected, command, timeout=timeout)
+    console.print(exec_raw(results) if raw else exec_table(results))
+    console.print(exec_summary(results))
 
 
 @app.command()
