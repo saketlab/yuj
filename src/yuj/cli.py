@@ -35,10 +35,12 @@ from yuj.cli_support import (
     _teardown_config,
     console,
 )
+from yuj.decommission import DecommissionResult
 from yuj.decommission import decommission as _decommission
 from yuj.decommission import schedule_decommission as _schedule_decommission
 from yuj.exceptions import YujError
 from yuj.exec_cmd import exec_fleet
+from yuj.fleet import Fleet, Host, map_fleet
 from yuj.keys import read_public_key
 from yuj.probe import diagnose_fleet, probe_fleet
 from yuj.provision import (
@@ -111,7 +113,9 @@ def init(
     ] = Path(),
     template: Annotated[
         str,
-        typer.Option("--template", "-t", help="Project template: bare | python | r."),
+        typer.Option(
+            "--template", "-t", help="Project template: bare | python | r | r-python."
+        ),
     ] = "bare",
 ) -> None:
     """Scaffold a ready-to-edit project (idempotent; never clobbers your files).
@@ -141,7 +145,7 @@ def init(
     if created:
         next_steps = (
             "yuj bootstrap → yuj run → yuj status → yuj pull"
-            if template in ("python", "r")
+            if template in ("python", "r", "r-python")
             else "yuj run → yuj status"
         )
         console.print(
@@ -217,7 +221,9 @@ def status(
     try:
         with Live(console=console, auto_refresh=False, screen=True) as live:
             while True:
-                statuses = probe_fleet(fleet, results_glob=glob, timeout=timeout)
+                statuses = probe_fleet(
+                    fleet, results_glob=glob, job=config.job, timeout=timeout
+                )
                 live.update(
                     status_table(
                         statuses,
@@ -661,8 +667,15 @@ def rescue(
 
 @app.command()
 def decommission(
-    host: Annotated[str, typer.Argument(help="Host name to decommission.")],
+    host: Annotated[
+        str | None,
+        typer.Argument(help="Host name, or 'all' for every usable host."),
+    ] = None,
     fleet_path: _FleetOpt = None,
+    all_hosts: Annotated[
+        bool,
+        typer.Option("--all", help="Decommission every usable host in the fleet."),
+    ] = False,
     at: Annotated[
         str | None,
         typer.Option("--at", help='Schedule (e.g. "+90 seconds", "9am tomorrow").'),
@@ -672,29 +685,47 @@ def decommission(
     ] = False,
     timeout: Annotated[float, typer.Option(help="Per-host op timeout (s).")] = 60.0,
 ) -> None:
-    """Politely tear down the yuj job on HOST (now, or scheduled with --at)."""
+    """Politely tear down the yuj job on HOST, or every usable host with --all."""
     fleet, config = _load(fleet_path)
-    try:
-        target = fleet.get(host)
-    except YujError as exc:
-        _die(str(exc))
+    if host is not None and host.strip().lower() == "all":
+        all_hosts, host = True, None
+    if all_hosts and host is not None:
+        _die("pass either a HOST or --all, not both")
+    if all_hosts:
+        targets = fleet.usable
+    elif host is None:
+        _die("pass a HOST (or --all / 'all' for the whole fleet)")
+    else:
+        try:
+            targets = Fleet((fleet.get(host),))
+        except YujError as exc:
+            _die(str(exc))
     cfg = _teardown_config(config)
-    transport = make_transport(target)
-    if at is not None:
-        result = _schedule_decommission(
-            transport, cfg, at, remove_dir=remove_dir, timeout=timeout
-        )
-        if not result.ok:
-            _die(str(result.error))
-        console.print(f"[green]scheduled[/green] decommission of {host} at {at}")
-        return
-    result = _decommission(transport, cfg, remove_dir=remove_dir, timeout=timeout)
-    if not result.ok:
-        _die(str(result.error))
-    console.print(
-        f"[green]decommissioned[/green] {host}: cron removed, "
-        f"{result.processes_remaining} processes remaining"
-    )
+
+    def teardown(h: Host) -> DecommissionResult:
+        transport = make_transport(h)
+        if at is not None:
+            return _schedule_decommission(
+                transport, cfg, at, remove_dir=remove_dir, timeout=timeout
+            )
+        return _decommission(transport, cfg, remove_dir=remove_dir, timeout=timeout)
+
+    results = map_fleet(targets, teardown, max_workers=8)
+    failed = 0
+    for name in targets.names:
+        result = results[name]
+        if result.scheduled:
+            console.print(f"[green]scheduled[/green] decommission of {name} at {at}")
+        elif result.ok:
+            console.print(
+                f"[green]decommissioned[/green] {name}: cron removed, "
+                f"{result.processes_remaining} processes remaining"
+            )
+        else:
+            failed += 1
+            console.print(f"[red]failed[/red] {name}: {result.error}")
+    if failed:
+        raise typer.Exit(1)
 
 
 @app.command()

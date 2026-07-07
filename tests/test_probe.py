@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from yuj import probe as probe_module
@@ -80,6 +82,12 @@ class TestParseStatus:
         assert s.hostname is None
         assert s.nproc == 4
 
+    def test_do_not_use_host_marked_excluded(self) -> None:
+        host = Host(name="r", ip="1", user="u", password="p", do_not_use=True)
+        s = parse_status("YUJSTATUS\nhost=r\nYUJEND\n", host)
+        assert s.excluded is True
+        assert s.state() == "excluded"
+
 
 class TestState:
     def _status(self, **kw: object) -> HostStatus:
@@ -100,11 +108,50 @@ class TestState:
     def test_stalled_old_output_no_watchdog(self) -> None:
         assert self._status(newest_age_min=200, n_outputs=10).state(90) == "stalled"
 
-    def test_idle_watchdog_up_no_output_yet(self) -> None:
-        assert self._status(watchdog_running=True).state(90) == "idle"
+    def test_stalled_watchdog_up_no_output(self) -> None:
+        assert self._status(watchdog_running=True).state(90) == "stalled"
+
+    def test_dead_cron_installed_watchdog_gone(self) -> None:
+        assert self._status(cron_installed=True).state(90) == "dead"
+        s = self._status(cron_installed=True, n_outputs=5, newest_age_min=200)
+        assert s.state(90) == "dead"
+
+    def test_live_watchdog_beats_dead(self) -> None:
+        s = self._status(cron_installed=True, watchdog_running=True)
+        assert s.state(90) == "stalled"
 
     def test_idle_nothing(self) -> None:
         assert self._status().state(90) == "idle"
+
+    def test_excluded_wins(self) -> None:
+        assert self._status(excluded=True).state(90) == "excluded"
+        assert self._status(excluded=True, reachable=False).state(90) == "excluded"
+
+
+class TestStatusCommandJobScope:
+    def test_generic_marker_without_job(self) -> None:
+        cmd = probe_module._status_command("~/results/*")
+        assert "[y]uj-watchdog" in cmd
+
+    def test_job_scoped_marker_in_command(self) -> None:
+        cmd = probe_module._status_command("~/results/*", job="preflight-sc")
+        assert r"[ /]preflight-sc\.yuj-watchdog\.sh" in cmd
+
+    def test_cron_probed_only_when_job_given(self) -> None:
+        assert "cron=" not in probe_module._status_command("~/results/*")
+        cmd = probe_module._status_command("~/results/*", job="preflight-sc")
+        assert "cron=" in cmd
+        assert r"[ /]preflight-sc\.yuj-ensure\.sh" in cmd
+
+    def test_marker_anchors_against_substring_collision(self) -> None:
+        rx = re.compile(probe_module._watchdog_grep("sc"))
+        assert rx.search("bash sc.yuj-watchdog.sh")
+        assert rx.search("bash /home/u/d/sc.yuj-watchdog.sh")
+        assert not rx.search("bash preflight-sc.yuj-watchdog.sh")
+
+    def test_marker_escapes_dot_in_job(self) -> None:
+        rx = re.compile(probe_module._watchdog_grep("a.b"))
+        assert not rx.search("bash axb.yuj-watchdog.sh")
 
 
 class TestProbeHost:

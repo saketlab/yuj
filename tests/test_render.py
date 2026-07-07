@@ -31,7 +31,7 @@ def _statuses() -> list[HostStatus]:
             newest_age_min=300,
             watchdog_running=True,
         ),
-        HostStatus(name="fresh-idle", ip="3", reachable=True, watchdog_running=True),
+        HostStatus(name="idle-host", ip="3", reachable=True),
         HostStatus(name="down", ip="4", reachable=False, error="banned"),
         HostStatus(
             name="owned",

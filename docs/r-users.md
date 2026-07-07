@@ -106,57 +106,73 @@ yuj's R extra installs these into `~/.yuj-rlib` on each host. Your worker alread
 .libPaths(c(Sys.getenv("R_LIBS_USER", "~/.yuj-rlib"), .libPaths()))
 ```
 
-## A real example: Seurat clustering
+## Calling R from Python (pyreadr and rpy2)
 
-`environment.yaml`:
+`yuj init --template r-python` scaffolds a job that runs R and Python together.
+For example, consider [pyreadr](https://pypi.org/project/pyreadr/) for reading
+R libraries in python and [rpy2](https://pypi.org/project/rpy2/)
+```bash
+micromamba run -n yuj-rpy Rscript worker.R "$item"      # R writes work/<item>.rds
+python worker.py "$item"                                # uv venv: pyreadr reads it
+micromamba run -n yuj-rpy python worker_rpy2.py "$item" # env python: rpy2 runs R
+```
+
+### The worked example
+
+**`environment.yaml`** — R and rpy2 from conda-forge:
 ```yaml
-name: yuj-r
+name: yuj-rpy
 channels: [conda-forge]
 dependencies:
   - r-base>=4.3
   - r-data.table
-  - r-seurat
-  - r-hdf5r
+  - rpy2
 ```
 
-`worker.R`:
+**`requirements.txt`** — pyreadr in the venv:
+```text
+pyreadr
+```
+
+**`worker.R`** — R produces an `.rds` for the item:
 ```r
-.libPaths(c(Sys.getenv("R_LIBS_USER", "~/.yuj-rlib"), .libPaths()))
-suppressMessages({
-  library(Seurat)
-  library(data.table)
-})
-
-args    <- commandArgs(trailingOnly = TRUE)
-sample  <- args[[1]]
-out_dir <- Sys.getenv("YUJ_OUT", "results")
-dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
-
-result <- tryCatch({
-  mat <- Read10X_h5(file.path("data", paste0(sample, ".h5")))
-  seu <- CreateSeuratObject(mat, project = sample)
-  seu <- NormalizeData(seu) |> FindVariableFeatures() |>
-         ScaleData() |> RunPCA() |> FindNeighbors() |> FindClusters()
-  data.table(sample = sample, n_cells = ncol(seu),
-             n_clusters = max(seu$seurat_clusters) + 1)
-}, error = function(e) {
-  data.table(sample = sample, n_cells = NA, error = conditionMessage(e))
-})
-
-fwrite(result, file.path(out_dir, paste0(sample, ".csv")))
+args <- commandArgs(trailingOnly = TRUE)
+item <- args[[1]]
+dir.create("work", showWarnings = FALSE)
+suppressMessages(library(data.table))
+saveRDS(data.table(item = item, n_char = nchar(item)),
+        file.path("work", paste0(item, ".rds")))
 ```
 
-To push the h5 files as payload:
-```yaml
-# yuj.yaml
-deploy:
-  code: [worker.R, items.txt, r-packages.txt]
-  payload: [data/]          # rsync the h5 files to each host
+**`worker.py`** — pyreadr reads that `.rds` with no R involved, writes the result:
+```python
+import os, sys
+from pathlib import Path
+import pyreadr
+
+item = sys.argv[1]
+out = Path(os.environ.get("YUJ_OUT", "results"))
+out.mkdir(parents=True, exist_ok=True)
+df = pyreadr.read_r(f"work/{item}.rds")[None]  # None key = the unnamed object
+df.to_csv(out / f"{item}.csv", index=False)
 ```
 
+**`worker_rpy2.py`** — rpy2 does the same read *through R*, then calls an R function
+on the result (run it with the micromamba env's Python):
+```python
+import sys
+import rpy2.robjects as ro
+
+item = sys.argv[1]
+dt = ro.r["readRDS"](f"work/{item}.rds")  # R reads its own .rds
+n_rows = ro.r["nrow"](dt)[0]              # call any R function on the R object
+print(f"rpy2: {item}.rds has {n_rows} row(s)")
+```
+
+Run the job (deploy first, so bootstrap sees the env files on each host):
 ```bash
-yuj bootstrap
-yuj deploy       # transfers data/ + worker.R to every host
+yuj deploy       # send worker.*, environment.yaml, requirements.txt
+yuj bootstrap    # build the uv venv (pyreadr) and the micromamba env (R + rpy2)
 yuj submit
 yuj pull
 ```

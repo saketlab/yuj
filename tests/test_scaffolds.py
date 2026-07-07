@@ -47,6 +47,37 @@ def test_r_template_is_turnkey() -> None:
     assert "commandArgs" in files["worker.R"]
 
 
+def test_r_python_template_is_turnkey() -> None:
+    files = scaffold_files("r-python")
+    assert set(files) == {
+        "fleet.csv",
+        "yuj.yaml",
+        "worker.sh",
+        "worker.py",
+        "worker_rpy2.py",
+        "worker.R",
+        "items.txt",
+        "environment.yaml",
+        "requirements.txt",
+    }
+    yaml = files["yuj.yaml"]
+    assert "env_manager: uv" in yaml
+    assert "extras: [micromamba]" in yaml
+    assert "micromamba run -n yuj-rpy Rscript" in files["worker.sh"]
+    assert files["environment.yaml"].count("name: yuj-rpy") == 1
+    # rpy2 must be conda-forge (linked to R), pyreadr pip (pure-python). Check
+    # actual dependency lines, not the comments that name both.
+    req_deps = [
+        ln.strip()
+        for ln in files["requirements.txt"].splitlines()
+        if ln.strip() and not ln.lstrip().startswith("#")
+    ]
+    assert "rpy2" in files["environment.yaml"]
+    assert req_deps == ["pyreadr"]
+    assert "import pyreadr" in files["worker.py"]
+    assert "import rpy2" in files["worker_rpy2.py"]
+
+
 def test_all_templates_listed() -> None:
     for t in TEMPLATES:
         assert scaffold_files(t)["fleet.csv"]

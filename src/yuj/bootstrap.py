@@ -273,6 +273,9 @@ def _env_sh_body(cfg: BootstrapConfig, spec: _ManagerSpec) -> str:
         lines.append('export PATH="$HOME/ollama/bin:$PATH"')
     if "R" in extras_upper:
         lines.append('export R_LIBS_USER="$HOME/.yuj-rlib"')
+    if "MICROMAMBA" in extras_upper:
+        prefix = "${MAMBA_ROOT_PREFIX:-$HOME/micromamba}"
+        lines.append(f'export MAMBA_ROOT_PREFIX="{prefix}"')
     return "\n".join(lines)
 
 

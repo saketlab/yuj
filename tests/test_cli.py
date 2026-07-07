@@ -413,3 +413,42 @@ class TestDecommission:
         fleet = _write_fleet(tmp_path)
         result = runner.invoke(app, ["decommission", "ghost", "--fleet", str(fleet)])
         assert result.exit_code == 1
+
+    def test_decommission_all(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fleet = _write_fleet(tmp_path)
+        monkeypatch.setattr(
+            cli_module,
+            "_decommission",
+            lambda transport, cfg, **kw: DecommissionResult(
+                host=transport.host.name, ok=True, cron_removed=True
+            ),
+        )
+        for arg in ("--all", "all"):
+            result = runner.invoke(app, ["decommission", arg, "--fleet", str(fleet)])
+            assert result.exit_code == 0, arg
+            assert "decommissioned a" in result.stdout
+            assert "decommissioned b" in result.stdout
+
+    def test_decommission_all_failure_exits_nonzero(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fleet = _write_fleet(tmp_path)
+        monkeypatch.setattr(
+            cli_module,
+            "_decommission",
+            lambda transport, cfg, **kw: DecommissionResult(
+                host=transport.host.name, ok=False, error="boom"
+            ),
+        )
+        result = runner.invoke(app, ["decommission", "--all", "--fleet", str(fleet)])
+        assert result.exit_code == 1
+        assert "failed" in result.stdout
+
+    def test_decommission_needs_host_or_all(self, tmp_path: Path) -> None:
+        fleet = _write_fleet(tmp_path)
+        neither = runner.invoke(app, ["decommission", "--fleet", str(fleet)])
+        assert neither.exit_code == 1
+        both = runner.invoke(app, ["decommission", "a", "--all", "--fleet", str(fleet)])
+        assert both.exit_code == 1

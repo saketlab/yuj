@@ -28,8 +28,10 @@ class HostStatus:
     n_outputs: int | None = None
     newest_age_min: int | None = None
     watchdog_running: bool = False
+    cron_installed: bool = False
     console_user: str | None = None
     error: str | None = None
+    excluded: bool = False
 
     @property
     def owner_present(self) -> bool:
@@ -37,14 +39,18 @@ class HostStatus:
         return bool(self.console_user)
 
     def state(self, stall_threshold_min: int = DEFAULT_STALL_MIN) -> str:
-        """Classify the host: ``down``/``producing``/``stalled``/``idle``."""
+        """Classify: excluded/down/producing/stalled/dead/idle."""
+        if self.excluded:
+            return "excluded"
         if not self.reachable:
             return "down"
         age = self.newest_age_min
         if age is not None and age < stall_threshold_min:
             return "producing"
         if self.watchdog_running:
-            return "idle" if age is None else "stalled"
+            return "stalled"
+        if self.cron_installed:
+            return "dead"
         if self.n_outputs:
             return "stalled"
         return "idle"

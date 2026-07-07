@@ -18,31 +18,51 @@ DEFAULT_PROBE_TIMEOUT = 20.0
 DEFAULT_MAX_WORKERS = 8
 
 
-def _status_command(results_glob: str) -> str:
-    """Build the defensive remote one-liner emitting a YUJSTATUS/YUJEND block."""
+def _script_grep(job: str, script: str) -> str:
+    """grep pattern for job.script, anchored to a leading space or slash."""
+    esc = f"{job}.{script}".replace(".", r"\.")
+    return rf"[ /]{esc}"
+
+
+def _watchdog_grep(job: str | None) -> str:
+    """grep pattern for job's watchdog process, or any yuj watchdog if None."""
+    if not job:
+        return f"[{WATCHDOG_MARKER[0]}]{WATCHDOG_MARKER[1:]}"
+    return _script_grep(job, f"{WATCHDOG_MARKER}.sh")
+
+
+def _status_command(results_glob: str, job: str | None = None) -> str:
+    """Build the remote one-liner emitting a YUJSTATUS/YUJEND block.
+
+    With job, the watchdog and ensure-cron counts are scoped to it.
+    """
     glob = validate_remote_glob(results_glob)
-    marker = f"[{WATCHDOG_MARKER[0]}]{WATCHDOG_MARKER[1:]}"
-    return "\n".join(
-        (
-            f"printf '{_BEGIN}\\n'",
-            "printf 'host=%s\\n' \"$(hostname 2>/dev/null)\"",
-            "printf 'load=%s\\n' \"$(cut -d' ' -f1 /proc/loadavg 2>/dev/null)\"",
-            "printf 'nproc=%s\\n' \"$(nproc 2>/dev/null)\"",
-            "printf 'mem=%s\\n' \"$(free -g 2>/dev/null | awk '/Mem/{print $2}')\"",
-            "printf 'cpu=%s\\n' \"$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null"
-            " | cut -d: -f2- | sed 's/^ *//')\"",
-            "printf 'gpu=%s\\n' \"$(nvidia-smi --query-gpu=name,memory.total"
-            ' --format=csv,noheader 2>/dev/null | head -1)"',
-            f"printf 'outputs=%s\\n' \"$(ls -t {glob} 2>/dev/null | wc -l)\"",
-            f'newest="$(ls -t {glob} 2>/dev/null | head -1)";'
-            " if [ -n \"$newest\" ]; then printf 'age=%s\\n'"
-            ' "$(( ( $(date +%s) - $(stat -c %Y "$newest") ) / 60 ))"; fi',
-            f"printf 'wd=%s\\n' \"$(ps -eo args 2>/dev/null | grep -c '{marker}')\"",
-            "printf 'console=%s\\n'"
-            " \"$(who 2>/dev/null | awk '$2 ~ /:0|tty|seat/{print $1; exit}')\"",
-            f"printf '{_END}\\n'",
+    marker = _watchdog_grep(job)
+    lines = [
+        f"printf '{_BEGIN}\\n'",
+        "printf 'host=%s\\n' \"$(hostname 2>/dev/null)\"",
+        "printf 'load=%s\\n' \"$(cut -d' ' -f1 /proc/loadavg 2>/dev/null)\"",
+        "printf 'nproc=%s\\n' \"$(nproc 2>/dev/null)\"",
+        "printf 'mem=%s\\n' \"$(free -g 2>/dev/null | awk '/Mem/{print $2}')\"",
+        "printf 'cpu=%s\\n' \"$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null"
+        " | cut -d: -f2- | sed 's/^ *//')\"",
+        "printf 'gpu=%s\\n' \"$(nvidia-smi --query-gpu=name,memory.total"
+        ' --format=csv,noheader 2>/dev/null | head -1)"',
+        f"printf 'outputs=%s\\n' \"$(ls -t {glob} 2>/dev/null | wc -l)\"",
+        f'newest="$(ls -t {glob} 2>/dev/null | head -1)";'
+        " if [ -n \"$newest\" ]; then printf 'age=%s\\n'"
+        ' "$(( ( $(date +%s) - $(stat -c %Y "$newest") ) / 60 ))"; fi',
+        f"printf 'wd=%s\\n' \"$(ps -eo args 2>/dev/null | grep -c '{marker}')\"",
+        "printf 'console=%s\\n'"
+        " \"$(who 2>/dev/null | awk '$2 ~ /:0|tty|seat/{print $1; exit}')\"",
+    ]
+    if job:
+        cron = _script_grep(job, "yuj-ensure.sh")
+        lines.append(
+            f"printf 'cron=%s\\n' \"$(crontab -l 2>/dev/null | grep -c '{cron}')\""
         )
-    )
+    lines.append(f"printf '{_END}\\n'")
+    return "\n".join(lines)
 
 
 def parse_status(stdout: str, host: Host) -> HostStatus:
@@ -52,6 +72,7 @@ def parse_status(stdout: str, host: Host) -> HostStatus:
         name=host.name,
         ip=host.ip,
         reachable=True,
+        excluded=host.do_not_use,
         hostname=fields.get("host") or None,
         cpu_model=_short_cpu(fields.get("cpu")),
         nproc=_to_int(fields.get("nproc")),
@@ -61,6 +82,7 @@ def parse_status(stdout: str, host: Host) -> HostStatus:
         n_outputs=_to_int(fields.get("outputs")),
         newest_age_min=_to_int(fields.get("age")),
         watchdog_running=(_to_int(fields.get("wd")) or 0) > 0,
+        cron_installed=(_to_int(fields.get("cron")) or 0) > 0,
         console_user=fields.get("console") or None,
     )
 
@@ -69,18 +91,31 @@ def probe_host(
     host: Host,
     *,
     results_glob: str = "~/*",
+    job: str | None = None,
     connect_timeout: int = 20,
     timeout: float = DEFAULT_PROBE_TIMEOUT,
 ) -> HostStatus:
     """Probe a single host, returning a :class:`HostStatus` (never raising)."""
     transport = make_transport(host, connect_timeout=connect_timeout)
     try:
-        result = transport.run(_status_command(results_glob), timeout=timeout)
+        result = transport.run(_status_command(results_glob, job), timeout=timeout)
     except YujError as exc:
-        return HostStatus(name=host.name, ip=host.ip, reachable=False, error=str(exc))
+        return HostStatus(
+            name=host.name,
+            ip=host.ip,
+            reachable=False,
+            error=str(exc),
+            excluded=host.do_not_use,
+        )
     if not result.ok or _BEGIN not in result.stdout:
         detail = result.stderr.strip() or f"exit {result.returncode}"
-        return HostStatus(name=host.name, ip=host.ip, reachable=False, error=detail)
+        return HostStatus(
+            name=host.name,
+            ip=host.ip,
+            reachable=False,
+            error=detail,
+            excluded=host.do_not_use,
+        )
     return parse_status(result.stdout, host)
 
 
@@ -88,6 +123,7 @@ def probe_fleet(
     fleet: Fleet,
     *,
     results_glob: str = "~/*",
+    job: str | None = None,
     connect_timeout: int = 20,
     timeout: float = DEFAULT_PROBE_TIMEOUT,
     max_workers: int = DEFAULT_MAX_WORKERS,
@@ -98,6 +134,7 @@ def probe_fleet(
         lambda host: probe_host(
             host,
             results_glob=results_glob,
+            job=job,
             connect_timeout=connect_timeout,
             timeout=timeout,
         ),

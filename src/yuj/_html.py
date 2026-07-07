@@ -6,8 +6,10 @@ from yuj.status import DEFAULT_STALL_MIN, HostStatus
 _STATE = {
     "producing": ("producing", "#34c759"),
     "stalled": ("stalled", "#ff3b30"),
+    "dead": ("dead", "#d70015"),
     "idle": ("idle", "#ff9500"),
     "down": ("down", "#8e8e93"),
+    "excluded": ("excluded", "#8e8e93"),
 }
 
 

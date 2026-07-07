@@ -232,7 +232,7 @@ def _render_status(
     glob, threshold, total = _resolve_status_opts(
         config, results_glob, stall_min, total_items
     )
-    statuses = probe_fleet(fleet, results_glob=glob, timeout=timeout)
+    statuses = probe_fleet(fleet, results_glob=glob, job=config.job, timeout=timeout)
     console.print(
         status_table(statuses, stall_threshold_min=threshold, total_items=total)
     )
@@ -311,7 +311,9 @@ def _run_html_dashboard(
     base_time = time.monotonic()
     opened = False
     while True:
-        statuses = probe_fleet(fleet, results_glob=glob, timeout=timeout)
+        statuses = probe_fleet(
+            fleet, results_glob=glob, job=config.job, timeout=timeout
+        )
         done = sum(s.n_outputs or 0 for s in statuses)
         if base_done is None:
             base_done = done

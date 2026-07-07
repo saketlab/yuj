@@ -8,7 +8,7 @@ override. Run any command with `--help` for the full option list.
 Scaffold a ready-to-edit project. Never clobbers existing files.
 
 ```bash
-yuj init [DIRECTORY] [--template {bare,python,r}]
+yuj init [DIRECTORY] [--template {bare,python,r,r-python}]
 ```
 
 | Template | Creates |
@@ -16,6 +16,11 @@ yuj init [DIRECTORY] [--template {bare,python,r}]
 | `bare` | `fleet.csv`, `yuj.yaml`, `worker.sh` |
 | `python` | + `worker.py`, `items.txt` |
 | `r` | + `worker.R`, `items.txt`, `environment.yaml`, `r-packages.txt` |
+| `r-python` | + `worker.sh`, `worker.py`, `worker_rpy2.py`, `worker.R`, `items.txt`, `environment.yaml`, `requirements.txt` |
+
+`r-python` runs uv (Python) and micromamba (a conda-forge R env) side by side,
+with `pyreadr` in the uv venv and `rpy2` in the micromamba env. See the
+[R users guide](https://yuj.saketlab.org/r-users/) for details.
 
 ```bash
 yuj init my-job --template r
@@ -159,7 +164,7 @@ yuj status [--fleet PATH] [--results-glob GLOB] [--stall-min N] [--watch N]
 
 | Column | Meaning |
 |--------|---------|
-| state | `● producing` · `● stalled` · `○ idle` · `● down` |
+| state | see table below |
 | cpu | Core count + model |
 | gpu | GPU name + memory |
 | mem | RAM in GB |
@@ -167,6 +172,15 @@ yuj status [--fleet PATH] [--results-glob GLOB] [--stall-min N] [--watch N]
 | outputs | Count of result files matching `results_glob` |
 | age | Minutes since newest output (stall detection) |
 | owner | `⚠ alice` if a human is at the console |
+
+| State | Meaning |
+|-------|---------|
+| `● producing` | Fresh output within `--stall-min` |
+| `● stalled` | Watchdog running but no fresh output |
+| `✖ dead` | Job installed (cron present) but watchdog gone |
+| `○ idle` | Reachable, no job running |
+| `● down` | Unreachable |
+| `⊘ excluded` | Host flagged `do_not_use` |
 
 `--watch 30` enters live mode, refreshing every 30 seconds. Press Ctrl-C to exit.
 
@@ -240,13 +254,31 @@ Pass `--work-dir ~` if you haven't deployed yet. `df` can't measure a
 │           │ /dev/sda1      │ /home │ 1.8T │  1.5T │   4% │  ★   │
 ```
 
+## `yuj exec`
+
+Run a shell command on every host in parallel.
+
+```bash
+yuj exec "COMMAND" [--fleet PATH] [--hosts a,b,...] [--include-down] [--timeout S] [--raw]
+```
+
+Runs in each host's default shell (the command should be in quotes). Targets usable hosts;
+`--include-down` also includes hosts flagged `do_not_use`. `--raw` prints each
+host's full stdout/stderr instead of a one-line-per-host table.
+
 ## `yuj decommission`
 
 Remove the yuj job from a host, now or scheduled.
 
 ```bash
 yuj decommission HOST [--fleet PATH] [--at "WHEN"] [--remove-dir]
+yuj decommission all [--fleet PATH] [--at "WHEN"] [--remove-dir]   # or --all
 ```
+
+`all` (or `--all`) tears down every usable host in parallel (hosts flagged
+`do_not_use` are skipped; name one explicitly to decommission it). Teardown
+touches only this job's cron and processes, so it is a no-op on hosts that never
+ran it.
 
 `--at` accepts relative delays (`+90 seconds`, `+2 hours`) or absolute times
 (`"9am tomorrow"`, `"17:00"`) via the host's `at` command.

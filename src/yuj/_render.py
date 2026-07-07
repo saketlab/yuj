@@ -23,8 +23,10 @@ _DIAGNOSIS_STYLE = {
 _STATE_STYLE = {
     "producing": ("● producing", "bold green"),
     "stalled": ("● stalled", "bold red"),
+    "dead": ("✖ dead", "bold red"),
     "idle": ("○ idle", "yellow"),
     "down": ("● down", "bold bright_black"),
+    "excluded": ("⊘ excluded", "dim"),
 }
 
 
@@ -210,6 +212,7 @@ def summary_line(
     up = sum(1 for s in statuses if s.reachable)
     producing = sum(1 for s in statuses if s.state(stall_threshold_min) == "producing")
     stalled = sum(1 for s in statuses if s.state(stall_threshold_min) == "stalled")
+    dead = sum(1 for s in statuses if s.state(stall_threshold_min) == "dead")
     owners = sum(1 for s in statuses if s.owner_present)
     outputs = sum(s.n_outputs or 0 for s in statuses)
     if total_items is not None:
@@ -217,8 +220,9 @@ def summary_line(
         out_str = f"{outputs}/{total_items} ({pct}%)"
     else:
         out_str = str(outputs)
+    dead_str = f" · {dead} dead" if dead else ""
     return (
-        f"{up}/{n_hosts} up · {producing} producing · {stalled} stalled"
+        f"{up}/{n_hosts} up · {producing} producing · {stalled} stalled{dead_str}"
         f" · {out_str} outputs · {owners} with owner present"
     )
 

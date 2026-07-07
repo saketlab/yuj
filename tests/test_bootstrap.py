@@ -95,6 +95,12 @@ class TestScript:
         )
         assert "ollama.com/install.sh" in script
 
+    def test_micromamba_extra_pins_root_prefix_in_env_sh(self) -> None:
+        script = build_bootstrap_script(
+            BootstrapConfig(env_manager="uv", extras=("micromamba",))
+        )
+        assert 'MAMBA_ROOT_PREFIX="${MAMBA_ROOT_PREFIX:-$HOME/micromamba}"' in script
+
     def test_unsafe_tarball_rejected(self) -> None:
         with pytest.raises(YujError, match="unsafe --from-tarball"):
             build_bootstrap_script(
