@@ -454,40 +454,88 @@ class TestDecommission:
         assert both.exit_code == 1
 
 
-class TestEtaRate:
-    """Persistent per-job production rate powering the status ETA."""
+def _seed_rates_snapshot(tmp_path: Path, names: dict[str, int], age_s: float) -> None:
+    """Write a prior rate snapshot so the next _rates call sees a delta."""
+    import json
+    import time
+
+    (tmp_path / ".yuj").mkdir(exist_ok=True)
+    series = {name: {"done": done} for name, done in names.items()}
+    (tmp_path / ".yuj" / "eta-job.json").write_text(
+        json.dumps({"t": time.time() - age_s, "series": series})
+    )
+
+
+class TestRates:
+    """Persistent per-name production rate for the status ETA."""
 
     def test_first_call_has_no_rate(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        assert cli_support_module._eta_rate("job", 100) is None
+        assert cli_support_module._rates("job", {"": 100}) == {"": None}
 
     def test_rate_from_snapshot_delta(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import json
-        import time
-
         monkeypatch.chdir(tmp_path)
-        cli_support_module._eta_rate("job", 100)  # writes first snapshot
-        snap = tmp_path / ".yuj" / "eta-job.json"
-        snap.write_text(json.dumps({"t": time.time() - 3600, "done": 100}))
-        rate = cli_support_module._eta_rate("job", 900)  # +800 over 1h
+        _seed_rates_snapshot(tmp_path, {"": 100}, age_s=3600)
+        rate = cli_support_module._rates("job", {"": 900})[""]  # +800 over 1h
         assert rate is not None and abs(rate - 800) < 5
 
     def test_no_progress_no_rate(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import json
-        import time
-
         monkeypatch.chdir(tmp_path)
-        (tmp_path / ".yuj").mkdir()
-        (tmp_path / ".yuj" / "eta-job.json").write_text(
-            json.dumps({"t": time.time() - 60, "done": 500})
+        _seed_rates_snapshot(tmp_path, {"": 500}, age_s=60)
+        assert cli_support_module._rates("job", {"": 500})[""] is None  # nothing new
+
+
+class TestStatusEtas:
+    """Fleet + per-host rate and weight-share ETA shown in the status table."""
+
+    def _statuses(self):
+        from yuj.status import HostStatus
+
+        return [
+            HostStatus(name="a", ip="1", reachable=True, n_outputs=100),
+            HostStatus(name="b", ip="2", reachable=True, n_outputs=50),
+        ]
+
+    def _fleet(self):
+        from yuj.fleet import Fleet, Host
+
+        return Fleet(
+            (
+                Host(name="a", ip="1", user="u", password="p", weight=3.0),
+                Host(name="b", ip="2", user="u", password="p", weight=1.0),
+            )
         )
-        assert cli_support_module._eta_rate("job", 500) is None  # nothing new landed
+
+    def test_rate_only_without_total(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        _seed_rates_snapshot(tmp_path, {"a": 0, "b": 0}, age_s=3600)
+        _, host_eta = cli_support_module._status_etas(
+            "job", self._fleet(), self._statuses(), None
+        )
+        assert host_eta["a"] == "100/hr"  # 100 items over 1h, no total -> rate only
+        assert host_eta["b"] == "50/hr"
+
+    def test_weight_share_target_drives_eta(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        _seed_rates_snapshot(tmp_path, {"": 0, "a": 0, "b": 0}, age_s=3600)
+        # total=400, weights 3:1 -> a targets 300 (200 left @100/hr=~2h),
+        # b targets 100 (50 left @50/hr=~1h); fleet 150 left @150/hr=~1h.
+        fleet_eta, host_eta = cli_support_module._status_etas(
+            "job", self._fleet(), self._statuses(), 400
+        )
+        assert "at 100/hr" in host_eta["a"] and "2." in host_eta["a"]
+        assert "at 50/hr" in host_eta["b"] and "1." in host_eta["b"]
+        assert fleet_eta is not None and "at 150/hr" in fleet_eta
 
 
 class TestCountItems:

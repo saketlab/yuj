@@ -32,7 +32,7 @@ from yuj.cli_support import (
     _resolve_status_opts,
     _run_html_dashboard,
     _select_hosts,
-    _status_eta,
+    _status_etas,
     _teardown_config,
     console,
 )
@@ -227,12 +227,14 @@ def status(
                 statuses = probe_fleet(
                     fleet, results_glob=glob, job=config.job, timeout=timeout
                 )
+                eta, host_eta = _status_etas(config.job, fleet, statuses, total_items)
                 live.update(
                     status_table(
                         statuses,
                         stall_threshold_min=threshold,
                         total_items=total_items,
-                        eta=_status_eta(config.job, statuses, total_items),
+                        eta=eta,
+                        host_eta=host_eta,
                     ),
                     refresh=True,
                 )

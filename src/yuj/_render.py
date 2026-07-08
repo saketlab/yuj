@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from rich.table import Table
 from rich.text import Text
@@ -90,6 +90,7 @@ def status_table(
     stall_threshold_min: int = DEFAULT_STALL_MIN,
     total_items: int | None = None,
     eta: str | None = None,
+    host_eta: Mapping[str, str] | None = None,
 ) -> Table:
     """Build the fleet status table from probe results."""
     if total_items is not None:
@@ -108,6 +109,7 @@ def status_table(
     table.add_column("load", justify="right")
     table.add_column("outputs", justify="right")
     table.add_column("age", justify="right")
+    table.add_column("eta", justify="right")
     table.add_column("owner", justify="center")
 
     for status in statuses:
@@ -126,6 +128,7 @@ def status_table(
             _load_text(status),
             "-" if status.n_outputs is None else str(status.n_outputs),
             _fmt_age(status.newest_age_min),
+            (host_eta or {}).get(status.name) or Text("-", style="dim"),
             owner,
         )
     return table

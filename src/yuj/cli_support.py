@@ -9,7 +9,7 @@ import webbrowser
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn
 
 import typer
 import yaml
@@ -228,10 +228,14 @@ def _render_status(
         config, results_glob, stall_min, total_items
     )
     statuses = probe_fleet(fleet, results_glob=glob, job=config.job, timeout=timeout)
-    eta = _status_eta(config.job, statuses, total)
+    eta, host_eta = _status_etas(config.job, fleet, statuses, total)
     console.print(
         status_table(
-            statuses, stall_threshold_min=threshold, total_items=total, eta=eta
+            statuses,
+            stall_threshold_min=threshold,
+            total_items=total,
+            eta=eta,
+            host_eta=host_eta,
         )
     )
     console.print(
@@ -271,33 +275,50 @@ def _humanize_minutes(minutes: int) -> str:
 _ETA_SMOOTH = 0.3
 
 
-def _eta_rate(job: str, done: int) -> float | None:
-    """Smoothed per-hour production rate from prior status snapshots of this job."""
+def _blend(prev_rate: float | None, dd: int, dt: float) -> float | None:
+    """Blend the instantaneous rate into the running one."""
+    if dt <= 0 or dd <= 0:
+        return prev_rate
+    inst = dd / (dt / 3600)
+    if prev_rate is None:
+        return inst
+    return _ETA_SMOOTH * inst + (1 - _ETA_SMOOTH) * prev_rate
+
+
+def _read_snap(snap: Path) -> dict[str, Any] | None:
+    if not snap.exists():
+        return None
+    try:
+        data: dict[str, Any] = json.loads(snap.read_text())
+        return data
+    except (OSError, ValueError):
+        return None
+
+
+_FLEET_KEY = ""  # reserved series name for the fleet-wide total (no host is unnamed)
+
+
+def _rates(job: str, done_by_name: dict[str, int]) -> dict[str, float | None]:
+    """Smoothed per-hour production rate for each named counter, persisted per job."""
     snap = Path(".yuj") / f"eta-{job}.json"
     now = time.time()
-    prev = None
-    if snap.exists():
-        try:
-            prev = json.loads(snap.read_text())
-        except (OSError, ValueError):
-            prev = None
-    rate = None
-    if prev:
-        rate = prev.get("rate")
-        dt, dd = now - prev.get("t", now), done - prev.get("done", done)
-        if dt > 0 and dd > 0:
-            inst = dd / (dt / 3600)
-            if rate is None:
-                rate = inst
-            else:
-                rate = _ETA_SMOOTH * inst + (1 - _ETA_SMOOTH) * rate
+    prev = _read_snap(snap) or {}
+    prev_t = prev.get("t", now)
+    prev_series = prev.get("series", {})
+    series: dict[str, dict[str, float | None]] = {}
+    for name, done in done_by_name.items():
+        s = prev_series.get(name, {})
+        series[name] = {
+            "done": done,
+            "rate": _blend(s.get("rate"), done - s.get("done", done), now - prev_t),
+        }
     snap.parent.mkdir(parents=True, exist_ok=True)
     with contextlib.suppress(OSError):
-        snap.write_text(json.dumps({"t": now, "done": done, "rate": rate}))
-    return rate
+        snap.write_text(json.dumps({"t": now, "series": series}))
+    return {name: s["rate"] for name, s in series.items()}
 
 
-def _eta(remaining: int, per_hour: float) -> str:
+def _eta(remaining: float, per_hour: float) -> str:
     """Completion estimate from a remaining count and a per-hour rate."""
     if per_hour <= 0:
         return "—"
@@ -309,15 +330,34 @@ def _eta(remaining: int, per_hour: float) -> str:
     return f"~{hours / 24:.1f}d at {per_hour:,.0f}/hr"
 
 
-def _status_eta(
-    job: str, statuses: Sequence[HostStatus], total: int | None
-) -> str | None:
-    """ETA string for the status title, or None until a total and rate exist."""
-    if not total:
-        return None
-    done = sum(s.n_outputs or 0 for s in statuses)
-    rate = _eta_rate(job, done)
-    return _eta(total - done, rate) if rate else None
+def _status_etas(
+    job: str, fleet: Fleet, statuses: Sequence[HostStatus], total: int | None
+) -> tuple[str | None, dict[str, str]]:
+    """Fleet ETA and per-host ETA/rate strings from one rate snapshot.
+
+    A host's target is its weight-share of ``total``; without a total, show rate.
+    """
+    done_by_host = {s.name: s.n_outputs or 0 for s in statuses}
+    fleet_done = sum(done_by_host.values())
+    rates = _rates(job, {_FLEET_KEY: fleet_done, **done_by_host})
+
+    fleet_rate = rates.get(_FLEET_KEY)
+    fleet_eta = _eta(total - fleet_done, fleet_rate) if total and fleet_rate else None
+
+    usable = fleet.usable
+    weights = {h.name: h.weight for h in usable.hosts}
+    wsum = usable.total_weight or 1.0
+    host_eta: dict[str, str] = {}
+    for s in statuses:
+        rate = rates.get(s.name)
+        if not rate or rate <= 0:
+            continue
+        if total and s.name in weights:
+            target = total * weights[s.name] / wsum
+            host_eta[s.name] = _eta(max(0.0, target - (s.n_outputs or 0)), rate)
+        else:
+            host_eta[s.name] = f"{rate:,.0f}/hr"
+    return fleet_eta, host_eta
 
 
 def _run_html_dashboard(
