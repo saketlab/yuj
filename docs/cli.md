@@ -159,7 +159,8 @@ yuj authorize --generate .yuj/keys/fleet_ed25519   # make + install a fresh key
 Fleet-wide dashboard.
 
 ```bash
-yuj status [--fleet PATH] [--results-glob GLOB] [--stall-min N] [--watch N]
+yuj status [--fleet PATH] [--results-glob GLOB] [--stall-min N] [--total N]
+           [--watch N] [--html PATH] [--open]
 ```
 
 | Column | Meaning |
@@ -182,7 +183,28 @@ yuj status [--fleet PATH] [--results-glob GLOB] [--stall-min N] [--watch N]
 | `● down` | Unreachable |
 | `⊘ excluded` | Host flagged `do_not_use` |
 
+When the total is known, the title shows a tqdm-style progress bar and an ETA:
+
+```text
+yuj fleet   13%|██▉                   | 4830/36782 · ETA ~11h at 820/hr
+```
+
+The total is counted automatically from `scatter.input` (or `input_file`), so a
+scattered job shows the bar with no extra flags. Pass `--total N` to override.
+The rate is measured between runs, so the ETA appears on the second `yuj status`
+(or the second `--watch` refresh).
+
 `--watch 30` enters live mode, refreshing every 30 seconds. Press Ctrl-C to exit.
+
+`--html PATH` writes the dashboard to a single self-contained HTML file instead
+of printing the table. Add `--watch N` to re-probe every N seconds (the page
+reloads itself) and `--open` to open it in a browser.
+
+```bash
+yuj status --total 36782 --html status.html --watch 30 --open
+```
+
+Without `--watch` it writes once and exits.
 
 ## `yuj fleet probe`
 

@@ -4,8 +4,16 @@ from __future__ import annotations
 
 from rich.console import Console
 
-from yuj._render import status_table, summary_line
+from yuj._render import _bar, status_table, summary_line
 from yuj.status import HostStatus
+
+
+def test_bar_endpoints_and_width() -> None:
+    assert _bar(0.0) == " " * 22
+    assert _bar(1.0) == "█" * 22
+    assert _bar(2.0) == "█" * 22  # clamped
+    assert all(len(_bar(f / 10)) == 22 for f in range(11))
+    assert _bar(0.5).startswith("█") and _bar(0.5).endswith(" ")  # partway
 
 
 def _statuses() -> list[HostStatus]:
@@ -68,6 +76,19 @@ def test_status_table_renders_states_and_columns() -> None:
 
 def test_status_table_title() -> None:
     assert status_table(_statuses(), title="my lab").title == "my lab"
+
+
+def test_status_table_title_shows_eta() -> None:
+    table = status_table(_statuses(), total_items=1000, eta="~2.5h at 800/hr")
+    title = str(table.title)
+    assert "175/1000" in title
+    assert "ETA ~2.5h at 800/hr" in title
+
+
+def test_status_table_eta_ignored_without_total() -> None:
+    # No total to measure against -> no progress, no ETA in the title.
+    title = str(status_table(_statuses(), eta="~2.5h at 800/hr").title)
+    assert "ETA" not in title
 
 
 def test_summary_line_counts() -> None:

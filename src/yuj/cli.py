@@ -32,6 +32,7 @@ from yuj.cli_support import (
     _resolve_status_opts,
     _run_html_dashboard,
     _select_hosts,
+    _status_eta,
     _teardown_config,
     console,
 )
@@ -91,7 +92,9 @@ _HostsOpt = Annotated[
 ]
 _TotalOpt = Annotated[
     int | None,
-    typer.Option("--total", help="Total items for progress % (else from input_file)."),
+    typer.Option(
+        "--total", help="Override the item total (else from scatter.input/input_file)."
+    ),
 ]
 
 
@@ -229,6 +232,7 @@ def status(
                         statuses,
                         stall_threshold_min=threshold,
                         total_items=total_items,
+                        eta=_status_eta(config.job, statuses, total_items),
                     ),
                     refresh=True,
                 )

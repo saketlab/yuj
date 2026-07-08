@@ -70,17 +70,34 @@ def _progress(statuses: Sequence[HostStatus], total_items: int) -> tuple[int, in
     return done, pct
 
 
+_BLOCKS = " ▏▎▍▌▋▊▉"
+
+
+def _bar(fraction: float, width: int = 22) -> str:
+    """tqdm-style progress bar, e.g. ``████▌      `` for ~20%."""
+    fraction = max(0.0, min(1.0, fraction))
+    full, rem = divmod(round(fraction * width * 8), 8)
+    bar = "█" * full
+    if full < width:
+        bar += _BLOCKS[rem]
+    return bar.ljust(width)
+
+
 def status_table(
     statuses: Sequence[HostStatus],
     *,
     title: str = "yuj fleet",
     stall_threshold_min: int = DEFAULT_STALL_MIN,
     total_items: int | None = None,
+    eta: str | None = None,
 ) -> Table:
     """Build the fleet status table from probe results."""
     if total_items is not None:
         done, pct = _progress(statuses, total_items)
-        title = f"{title}: {done}/{total_items} ({pct}%)"
+        frac = done / total_items if total_items else 0.0
+        title = f"{title}  {pct:3d}%|{_bar(frac)}| {done}/{total_items}"
+        if eta:
+            title += f" · ETA {eta}"
     table = Table(title=title, header_style="bold cyan", expand=False)
     table.add_column("host", style="bold")
     table.add_column("ip", style="dim")

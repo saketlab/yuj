@@ -452,3 +452,65 @@ class TestDecommission:
         assert neither.exit_code == 1
         both = runner.invoke(app, ["decommission", "a", "--all", "--fleet", str(fleet)])
         assert both.exit_code == 1
+
+
+class TestEtaRate:
+    """Persistent per-job production rate powering the status ETA."""
+
+    def test_first_call_has_no_rate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        assert cli_support_module._eta_rate("job", 100) is None
+
+    def test_rate_from_snapshot_delta(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import json
+        import time
+
+        monkeypatch.chdir(tmp_path)
+        cli_support_module._eta_rate("job", 100)  # writes first snapshot
+        snap = tmp_path / ".yuj" / "eta-job.json"
+        snap.write_text(json.dumps({"t": time.time() - 3600, "done": 100}))
+        rate = cli_support_module._eta_rate("job", 900)  # +800 over 1h
+        assert rate is not None and abs(rate - 800) < 5
+
+    def test_no_progress_no_rate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import json
+        import time
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".yuj").mkdir()
+        (tmp_path / ".yuj" / "eta-job.json").write_text(
+            json.dumps({"t": time.time() - 60, "done": 500})
+        )
+        assert cli_support_module._eta_rate("job", 500) is None  # nothing new landed
+
+
+class TestCountItems:
+    """Progress total auto-derived from scatter.input / input_file."""
+
+    def _cfg(self, **kw: object):
+        from yuj.config import ProjectConfig
+
+        return ProjectConfig.from_mapping(kw)
+
+    def test_prefers_scatter_input(self, tmp_path: Path) -> None:
+        full = tmp_path / "all.csv"
+        full.write_text("accession\na\nb\nc\n")  # header + 3 items
+        cfg = self._cfg(scatter={"input": str(full)}, input_file="slice.csv")
+        assert cli_support_module._count_items(cfg) == 3
+
+    def test_falls_back_to_input_file(self, tmp_path: Path) -> None:
+        items = tmp_path / "items.txt"
+        items.write_text("x\ny\n")
+        cfg = self._cfg(input_file=str(items))
+        assert cli_support_module._count_items(cfg) == 2
+
+    def test_none_when_unset_or_missing(self, tmp_path: Path) -> None:
+        assert cli_support_module._count_items(self._cfg()) is None
+        cfg = self._cfg(scatter={"input": str(tmp_path / "nope.csv")})
+        assert cli_support_module._count_items(cfg) is None

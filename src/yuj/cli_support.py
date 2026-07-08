@@ -1,16 +1,12 @@
-"""Support layer for the yuj CLI.
-
-Holds the shared Rich consoles plus the config-building, fleet-loading, and
-fleet-wide orchestration helpers. Keeping these out of ``cli.py`` lets that
-module stay a thin surface of Typer command definitions, so it changes only for
-CLI-ergonomic reasons, not whenever the config shape or an operation's wiring
-moves.
-"""
+"""Support layer for the yuj CLI."""
 
 from __future__ import annotations
 
+import contextlib
+import json
 import time
 import webbrowser
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import NoReturn
@@ -27,6 +23,8 @@ from yuj.deploy import DeployPlan, deploy_fleet
 from yuj.exceptions import YujError
 from yuj.fleet import Fleet, load_from_csv, load_from_yaml
 from yuj.probe import probe_fleet
+from yuj.scatter import read_items
+from yuj.status import HostStatus
 from yuj.supervise import SuperviseConfig, submit_fleet
 from yuj.window import Window
 
@@ -142,14 +140,11 @@ def _teardown_config(config: ProjectConfig) -> SuperviseConfig:
 
 
 def _count_items(config: ProjectConfig) -> int | None:
-    """Count non-blank lines in the local input_file, if configured."""
-    if not config.input_file:
+    """Total work-list size for progress, from scatter.input or input_file."""
+    src = config.scatter.get("input") or config.input_file
+    if not src or not Path(src).is_file():
         return None
-    path = Path(config.input_file)
-    if not path.is_file():
-        return None
-    with path.open(encoding="utf-8") as fh:
-        return sum(1 for line in fh if line.strip())
+    return len(read_items(src))
 
 
 def _resolve_status_opts(
@@ -233,8 +228,11 @@ def _render_status(
         config, results_glob, stall_min, total_items
     )
     statuses = probe_fleet(fleet, results_glob=glob, job=config.job, timeout=timeout)
+    eta = _status_eta(config.job, statuses, total)
     console.print(
-        status_table(statuses, stall_threshold_min=threshold, total_items=total)
+        status_table(
+            statuses, stall_threshold_min=threshold, total_items=total, eta=eta
+        )
     )
     console.print(
         summary_line(statuses, stall_threshold_min=threshold, total_items=total),
@@ -270,6 +268,35 @@ def _humanize_minutes(minutes: int) -> str:
     return f"{hours}h{mins:02d}m" if hours else f"{mins}m"
 
 
+_ETA_SMOOTH = 0.3
+
+
+def _eta_rate(job: str, done: int) -> float | None:
+    """Smoothed per-hour production rate from prior status snapshots of this job."""
+    snap = Path(".yuj") / f"eta-{job}.json"
+    now = time.time()
+    prev = None
+    if snap.exists():
+        try:
+            prev = json.loads(snap.read_text())
+        except (OSError, ValueError):
+            prev = None
+    rate = None
+    if prev:
+        rate = prev.get("rate")
+        dt, dd = now - prev.get("t", now), done - prev.get("done", done)
+        if dt > 0 and dd > 0:
+            inst = dd / (dt / 3600)
+            if rate is None:
+                rate = inst
+            else:
+                rate = _ETA_SMOOTH * inst + (1 - _ETA_SMOOTH) * rate
+    snap.parent.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(OSError):
+        snap.write_text(json.dumps({"t": now, "done": done, "rate": rate}))
+    return rate
+
+
 def _eta(remaining: int, per_hour: float) -> str:
     """Completion estimate from a remaining count and a per-hour rate."""
     if per_hour <= 0:
@@ -280,6 +307,17 @@ def _eta(remaining: int, per_hour: float) -> str:
     if hours < 48:
         return f"~{hours:.1f}h at {per_hour:,.0f}/hr"
     return f"~{hours / 24:.1f}d at {per_hour:,.0f}/hr"
+
+
+def _status_eta(
+    job: str, statuses: Sequence[HostStatus], total: int | None
+) -> str | None:
+    """ETA string for the status title, or None until a total and rate exist."""
+    if not total:
+        return None
+    done = sum(s.n_outputs or 0 for s in statuses)
+    rate = _eta_rate(job, done)
+    return _eta(total - done, rate) if rate else None
 
 
 def _run_html_dashboard(
