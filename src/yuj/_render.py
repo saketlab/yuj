@@ -221,6 +221,22 @@ def storage_table(
     return table
 
 
+def usable_summary(statuses: Sequence[HostStatus]) -> str:
+    """One line: how many hosts are usable now, and why the rest are held back."""
+    usable = [s.name for s in statuses if s.usable]
+    excluded = [s.name for s in statuses if s.excluded]
+    owned = [s.name for s in statuses if s.owner_present and not s.excluded]
+    down = [s.name for s in statuses if not s.reachable and not s.excluded]
+    line = f"{len(usable)} of {len(statuses)} host(s) usable now"
+    if down:
+        line += f"; down: {', '.join(down)}"
+    if owned:
+        line += f"; owner present: {', '.join(owned)}"
+    if excluded:
+        line += f"; do_not_use: {', '.join(excluded)}"
+    return line
+
+
 def summary_line(
     statuses: Sequence[HostStatus],
     *,

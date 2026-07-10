@@ -4,8 +4,23 @@ from __future__ import annotations
 
 from rich.console import Console
 
-from yuj._render import _bar, status_table, summary_line
+from yuj._render import _bar, status_table, summary_line, usable_summary
 from yuj.status import HostStatus
+
+
+def test_usable_property_and_summary() -> None:
+    hosts = [
+        HostStatus(name="ready", ip="1", reachable=True),
+        HostStatus(name="owned", ip="2", reachable=True, console_user="alice"),
+        HostStatus(name="down", ip="3", reachable=False, error="banned"),
+        HostStatus(name="skip", ip="4", reachable=True, excluded=True),
+    ]
+    assert [h.name for h in hosts if h.usable] == ["ready"]
+    line = usable_summary(hosts)
+    assert "1 of 4 host(s) usable" in line
+    assert "down: down" in line
+    assert "owner present: owned" in line
+    assert "do_not_use: skip" in line
 
 
 def test_bar_endpoints_and_width() -> None:

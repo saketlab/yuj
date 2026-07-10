@@ -38,6 +38,11 @@ class HostStatus:
         """True if a human appears to be logged in at the console (be polite!)."""
         return bool(self.console_user)
 
+    @property
+    def usable(self) -> bool:
+        """True if work can be sent here now: reachable, not excluded, no owner."""
+        return self.reachable and not self.excluded and not self.owner_present
+
     def state(self, stall_threshold_min: int = DEFAULT_STALL_MIN) -> str:
         """Classify: excluded/down/producing/stalled/dead/idle."""
         if self.excluded:

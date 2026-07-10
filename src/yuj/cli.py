@@ -19,6 +19,7 @@ from yuj._render import (
     status_table,
     storage_summary,
     storage_table,
+    usable_summary,
 )
 from yuj.authorize import authorize_fleet
 from yuj.bootstrap import BootstrapConfig, bootstrap_fleet
@@ -535,6 +536,36 @@ def provision(
             for name, r in sorted(results.items())
         ],
     )
+
+
+@app.command()
+def usable(
+    fleet_path: _FleetOpt = None,
+    hosts: _HostsOpt = None,
+    names_only: Annotated[
+        bool,
+        typer.Option(
+            "--names-only", help="Print just usable host names, one per line."
+        ),
+    ] = False,
+    timeout: Annotated[float, typer.Option(help="Per-host probe timeout (s).")] = 20.0,
+) -> None:
+    """List hosts you can send work to now: reachable, not do_not_use, no owner."""
+    fleet, config = _load(fleet_path)
+    # Probe do_not_use hosts too, so the summary can report them as held back;
+    # the .usable property still keeps them out of the ready list.
+    fleet = _select_hosts(fleet, hosts, allow_do_not_use=True)
+    statuses = probe_fleet(
+        fleet, results_glob=config.results_glob, job=config.job, timeout=timeout
+    )
+    ready = [s for s in statuses if s.usable]
+    if names_only:
+        for s in ready:
+            console.print(s.name)
+        return
+    if ready:
+        console.print(status_table(ready, title="yuj usable"))
+    console.print(usable_summary(statuses))
 
 
 @app.command()
