@@ -11,7 +11,7 @@
 `yuj` scatters work across idle lab desktops over SSH and pulls the results back. A self-healing watchdog on each host keeps the batch running through crashes and reboots, so you don't need root on the machines or a scheduler watching over them.
 
 
-If you have a 'batch of jobs' that can be split into independent items, you can use yuj to achieve effective and fast parallelisation. Each item runs on one host on its own, with no communication between items and no shared memory. 
+If you have a 'batch of jobs' that can be split into independent items, you can use yuj to achieve effective and fast parallelisation. Each item runs on one host on its own, with no communication between items and no shared memory.
 
 `yuj` will not work if your job needs nodes to talk to each other mid-run (MPI, a shared address space).
 
@@ -48,8 +48,8 @@ See the [full quickstart](https://yuj.saketlab.org/quickstart/) and [R users gui
 ## How it works
 
 0. **provision** *(optional)*: if you only have an admin/sudo login, `yuj provision` creates a dedicated worker user with key-only auth and writes a `provisioned-fleet.csv` you can hand to the rest of the commands. This is the one step that needs privilege.
-1. **deploy**: rsync your code + data to `$HOME` on each host.
-2. **submit**: install a watchdog and a cron entry that restarts it every 15 min. The watchdog runs your work loop, detects stalls (no new output in N min), and relaunches.
+1. **deploy**: rsync your code + data to `$HOME` on each host. Aborts up front if a configured path is missing locally.
+2. **submit**: dry-run the work command on one host first (a **canary**), so a broken job aborts before it installs a watchdog everywhere. Then install a watchdog and a cron entry that restarts it every 15 min. The watchdog runs your work loop, detects stalls (no new output in N min), and relaunches.
 3. **resume**: the work loop skips any item whose output file already exists. This is the only reliable checkpoint when a worker crashes mid-write.
 4. **pull**: parallel rsync of outputs back to a central directory, tolerant of hosts being down.
 5. **survive**: supervision lives in cron on each host, so a rebooted host resumes within 15 min with no controller involved.
@@ -73,4 +73,4 @@ uv run mypy src               # strict type-check
 
 ## License
 
-[MIT](LICENSE) 
+[MIT](LICENSE)

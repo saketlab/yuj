@@ -124,3 +124,33 @@ class TestScatterHostBody:
             filename="f.txt",
         )
         assert captured["body"] == "a\n"
+
+    def test_filename_with_subdir_mkdirs_and_places(self) -> None:
+        captured: dict[str, str] = {}
+
+        class FakeResult:
+            ok = True
+            stderr = ""
+
+        class FakeTransport:
+            host = Host(name="h", ip="1.1.1.1", user="u")
+
+            def run(self, cmd, **_k):  # type: ignore[no-untyped-def]
+                captured["mkdir"] = cmd
+                return FakeResult()
+
+            def put(self, local, dest, **_k):  # type: ignore[no-untyped-def]
+                captured["dest"] = dest
+                captured["body"] = open(local).read()  # noqa: SIM115
+                return FakeResult()
+
+        res = scatter_host(
+            FakeTransport(),  # type: ignore[arg-type]
+            ["a", "b"],
+            remote_dir="yuj-run",
+            filename="sub/dir/slice.txt",
+        )
+        assert res.ok and res.count == 2
+        assert "yuj-run/sub/dir" in captured["mkdir"]  # parent created remotely
+        assert captured["dest"] == "yuj-run/sub/dir/"
+        assert captured["body"] == "a\nb\n"

@@ -66,7 +66,7 @@ When multiple jobs run on the same host, yuj uses the **job name** to make every
 
 ## Weighted distribution
 
-Hosts differ in capacity. yuj uses the **largest-remainder (Hamilton) method** to split items proportionally to per-host weights, so item counts sum exactly to the batch size with none lost.
+yuj uses the **largest-remainder (Hamilton) method** to split items proportionally to per-host weights, so item counts sum exactly to the batch size with none lost.
 
 ```csv
 # fleet.csv
@@ -78,6 +78,11 @@ alice,10.0.0.2,laptop,p,1
 `yuj scatter` applies this split, writing each host only its own slice so no two
 hosts process the same item. Without it, every host reads the full list (still
 correct, since resume-by-output deduplicates, just redundant).
+
+When the static `weight` column doesn't reflect reality, `yuj scatter --by
+<dimension>` measures live capacity (cores, RAM, GPU VRAM, free disk, or
+download speed) and splits by that instead. `yuj fleet bench` shows the same
+ranking without scattering.
 
 ## do_not_use
 
@@ -132,7 +137,7 @@ A host is treated as local when `local` is true, or when its `ip` is
 path that many hardened sshd configs refuse. Every other command (`deploy`,
 `scatter`, `status`, `pull`, …) works on a local host unchanged.
 
-## Provisioning 
+## Provisioning
 
 Everything else in yuj runs as an ordinary user, but *creating* that user needs
 root. `yuj provision` is the optional first step for when you have an admin login

@@ -87,7 +87,16 @@ The watchdog relaunches your worker if it dies or stalls; the cron entry restart
 By default every host reads the full `items.txt`. That's safe (yuj skips items whose output already exists) but redundant. To split the work so each host gets only its share, weighted by capacity, run `yuj scatter` before submitting:
 
 ```bash
-yuj scatter --input items.txt    # writes each host its own slice
+yuj scatter --input items.txt    # writes each host its own slice, by static weight
+```
+
+To split by live capacity instead of the static `weight` column, add `--by`
+(`cores`, `mem`, `gpu`, `disk`, or `download`). Rank the fleet first with
+`yuj fleet bench` to see the numbers:
+
+```bash
+yuj fleet bench --sort download          # rank hosts by download speed
+yuj scatter --input items.txt --by download   # faster hosts get more items
 ```
 :::
 

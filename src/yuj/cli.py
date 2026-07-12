@@ -12,6 +12,8 @@ from rich.live import Live
 
 from yuj import __version__
 from yuj._render import (
+    bench_summary,
+    bench_table,
     diagnosis_table,
     exec_raw,
     exec_summary,
@@ -22,7 +24,16 @@ from yuj._render import (
     usable_summary,
 )
 from yuj.authorize import authorize_fleet
+from yuj.bench import (
+    DEFAULT_MAX_TIME,
+    DEFAULT_URL,
+    DIMENSION,
+    DIMENSIONS,
+    bench_fleet,
+    weights_for,
+)
 from yuj.bootstrap import BootstrapConfig, bootstrap_fleet
+from yuj.canary import DEFAULT_TIMEOUT_S
 from yuj.cli_support import (
     _die,
     _do_deploy,
@@ -36,7 +47,9 @@ from yuj.cli_support import (
     _status_etas,
     _teardown_config,
     console,
+    do_canary,
 )
+from yuj.config import ProjectConfig
 from yuj.decommission import DecommissionResult
 from yuj.decommission import decommission as _decommission
 from yuj.decommission import schedule_decommission as _schedule_decommission
@@ -90,6 +103,12 @@ _HostsOpt = Annotated[
         "--hosts",
         help="Comma-separated host names (default: all hosts not marked do_not_use).",
     ),
+]
+_NoCanaryOpt = Annotated[
+    bool, typer.Option("--no-canary", help="Skip the pre-submit single-host dry run.")
+]
+_CanaryTimeoutOpt = Annotated[
+    int, typer.Option("--canary-timeout", help="Canary dry-run timeout (s).")
 ]
 _TotalOpt = Annotated[
     int | None,
@@ -171,6 +190,57 @@ def fleet_probe(
     _render_status(
         fleet_path, results_glob, stall_min=None, timeout=timeout, total_items=total
     )
+
+
+_SortOpt = Annotated[
+    str,
+    typer.Option(
+        "--sort",
+        "-s",
+        help=f"Rank hosts by throughput dimension: {'/'.join(DIMENSIONS)}.",
+    ),
+]
+
+
+@fleet_app.command("bench")
+def fleet_bench(
+    fleet_path: _FleetOpt = None,
+    hosts: _HostsOpt = None,
+    sort_by: _SortOpt = "cores",
+    no_download: Annotated[
+        bool,
+        typer.Option("--no-download", help="Skip the download test (hardware only)."),
+    ] = False,
+    url: Annotated[
+        str | None,
+        typer.Option("--url", help="URL to time the download against (else NCBI FTP)."),
+    ] = None,
+    max_time: Annotated[
+        int, typer.Option("--max-time", help="Cap the download test at N seconds.")
+    ] = DEFAULT_MAX_TIME,
+    timeout: Annotated[float, typer.Option(help="Per-host op timeout (s).")] = 60.0,
+) -> None:
+    """Benchmark and rank the fleet by throughput: cores, RAM, GPU, disk, or download.
+
+    Sorts hosts (best first) along ``--sort`` with a bar per host. The download
+    test is included by default (skip with ``--no-download``); ``--sort download``
+    always runs it. The same numbers drive ``yuj scatter --by <dim>``.
+    """
+    if sort_by not in DIMENSIONS:
+        _die(f"--sort must be one of {', '.join(DIMENSIONS)} (got {sort_by!r}).")
+    fleet, config = _load(fleet_path)
+    fleet = _select_hosts(fleet, hosts)
+    download = (not no_download) or DIMENSION[sort_by].needs_download
+    benches = bench_fleet(
+        fleet,
+        work_dir=config.remote_dir,
+        url=url or config.scatter.get("bench_url") or DEFAULT_URL,
+        max_time=max_time,
+        download=download,
+        timeout=timeout,
+    )
+    console.print(bench_table(benches, sort_by=sort_by))
+    console.print(bench_summary(benches))
 
 
 @app.command()
@@ -273,12 +343,72 @@ def submit(
     no_start: Annotated[
         bool, typer.Option("--no-start", help="Install but don't start the watchdog.")
     ] = False,
+    no_canary: _NoCanaryOpt = False,
+    canary_timeout: _CanaryTimeoutOpt = DEFAULT_TIMEOUT_S,
     timeout: Annotated[float, typer.Option(help="Per-host op timeout (s).")] = 120.0,
 ) -> None:
-    """Install the self-healing watchdog + cron on every host."""
+    """Install the self-healing watchdog + cron on every host.
+
+    Before installing fleet-wide, a canary runs the work command once on a
+    single host; if it fails fast, submit aborts (skip with ``--no-canary``).
+    """
     fleet, config = _load(fleet_path)
     fleet = _select_hosts(fleet, hosts)
-    _do_submit(fleet, config, start=not no_start, timeout=timeout)
+    _do_submit(
+        fleet,
+        config,
+        start=not no_start,
+        timeout=timeout,
+        canary=not no_canary,
+        canary_timeout=canary_timeout,
+    )
+
+
+@app.command()
+def canary(
+    fleet_path: _FleetOpt = None,
+    hosts: _HostsOpt = None,
+    canary_timeout: _CanaryTimeoutOpt = DEFAULT_TIMEOUT_S,
+) -> None:
+    """Dry-run the work command once on one host, without installing anything.
+
+    Runs on the first reachable host (narrow it with ``--hosts``); needs the code
+    already deployed (``yuj deploy``). Exits non-zero if the command fails fast.
+    """
+    fleet, config = _load(fleet_path)
+    fleet = _select_hosts(fleet, hosts)
+    do_canary(fleet, config, timeout_s=canary_timeout)
+
+
+def _smart_reweight(
+    fleet: Fleet, config: ProjectConfig, dim: str, *, timeout: float
+) -> Fleet:
+    """Benchmark ``fleet`` and return a sub-fleet weighted by live ``dim`` capacity.
+
+    Hosts that are unreachable or don't report the metric are dropped from the
+    scatter entirely (not just zero-weighted), so no dead host gets an empty
+    slice pushed to it. Dies if nothing is left to scatter to.
+    """
+    if dim not in DIMENSIONS:
+        _die(f"--by must be one of {', '.join(DIMENSIONS)} (got {dim!r}).")
+    benches = bench_fleet(
+        fleet,
+        work_dir=config.remote_dir,
+        url=config.scatter.get("bench_url") or DEFAULT_URL,
+        max_time=DEFAULT_MAX_TIME,
+        download=DIMENSION[dim].needs_download,
+        timeout=timeout,
+    )
+    weights, dropped = weights_for(benches, dim)
+    targets = {name: w for name, w in weights.items() if w > 0}
+    if not targets:
+        _die(f"no host reported usable {dim!r} capacity; nothing to scatter to.")
+    if dropped:
+        names = ", ".join(sorted(dropped))
+        console.print(f"[yellow]dropped (no {dim}): {names}[/yellow]")
+    shares = ", ".join(f"{n}={w:g}" for n, w in sorted(targets.items()))
+    console.print(f"weighting split by [bold]{dim}[/bold]: {shares}")
+    return fleet.select(list(targets)).with_weights(targets)
 
 
 @app.command()
@@ -299,16 +429,27 @@ def scatter(
             "--exclude", help="File of items to drop before split (e.g. done)."
         ),
     ] = None,
+    by: Annotated[
+        str | None,
+        typer.Option(
+            "--by",
+            help=f"Weight the split by live capacity: {'/'.join(DIMENSIONS)} "
+            "(default: static fleet weights).",
+        ),
+    ] = None,
     timeout: Annotated[float, typer.Option(help="Per-host op timeout (s).")] = 300.0,
 ) -> None:
     """Weighted-split a work list and write each host only its own slice.
 
     The slice lands at ``remote_dir/<into>`` (the file your work loop reads).
-    Item counts follow each host's ``weight``; ``do_not_use``/zero-weight hosts
-    get nothing. Re-run any time to re-split (e.g. after editing weights).
+    Item counts follow each host's ``weight`` by default; with ``--by cores|mem|
+    gpu|disk|download`` they follow live measured capacity instead (the machine
+    that can take more load gets more items). Re-run any time to re-split.
     """
     fleet, config = _load(fleet_path)
     fleet = _select_hosts(fleet, hosts)
+    if by is not None:
+        fleet = _smart_reweight(fleet, config, by, timeout=timeout)
     scfg = config.scatter
     src = input_path or scfg.get("input")
     dest = into or scfg.get("into") or config.input_file
@@ -817,6 +958,8 @@ def run(
     no_start: Annotated[
         bool, typer.Option("--no-start", help="Install watchdog but don't start it.")
     ] = False,
+    no_canary: _NoCanaryOpt = False,
+    canary_timeout: _CanaryTimeoutOpt = DEFAULT_TIMEOUT_S,
     deploy_timeout: Annotated[
         float, typer.Option("--deploy-timeout", help="Per-host deploy timeout (s).")
     ] = 1800.0,
@@ -832,7 +975,14 @@ def run(
     fleet, config = _load(fleet_path)
     fleet = _select_hosts(fleet, hosts)
     _do_deploy(fleet, config, push_payload=not no_payload, timeout=deploy_timeout)
-    _do_submit(fleet, config, start=not no_start, timeout=timeout)
+    _do_submit(
+        fleet,
+        config,
+        start=not no_start,
+        timeout=timeout,
+        canary=not no_canary,
+        canary_timeout=canary_timeout,
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover

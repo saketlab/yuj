@@ -1,10 +1,4 @@
-"""Split a batch across the fleet by weight and place each host's slice.
-
-``yuj deploy`` sends the *same* code/payload to every host; ``scatter`` is the
-complement: it divides a work list proportionally to each host's ``weight`` and
-writes each host only its own slice (as the file the work loop reads). Hosts
-flagged ``do_not_use`` or with weight 0 receive nothing.
-"""
+"""Split a batch across the fleet by weight and place each host's slice."""
 
 from __future__ import annotations
 
@@ -80,15 +74,18 @@ def scatter_host(
     if header:
         body += header + "\n"
     body += "".join(f"{item}\n" for item in items)
+    rel = Path(filename)
     remote = remote_dir.rstrip("/")
+    subdir = rel.parent.as_posix()
+    remote_target = remote if subdir == "." else f"{remote}/{subdir}"
     try:
-        mk = transport.run(f"mkdir -p {shlex.quote(remote)}", timeout=timeout)
+        mk = transport.run(f"mkdir -p {shlex.quote(remote_target)}", timeout=timeout)
         if not mk.ok:
             return ScatterResult(host, 0, False, f"mkdir failed: {mk.stderr.strip()}")
         with tempfile.TemporaryDirectory() as tmp:
-            local = Path(tmp) / filename
+            local = Path(tmp) / rel.name
             local.write_text(body, encoding="utf-8")
-            put = transport.put(str(local), remote + "/", timeout=timeout)
+            put = transport.put(str(local), remote_target + "/", timeout=timeout)
         if not put.ok:
             return ScatterResult(host, 0, False, put.stderr.strip())
     except YujError as exc:

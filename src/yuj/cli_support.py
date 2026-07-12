@@ -18,10 +18,12 @@ from rich.table import Table
 
 from yuj._html import status_html
 from yuj._render import status_table, summary_line
+from yuj.canary import DEFAULT_TIMEOUT_S, run_canary
 from yuj.config import ProjectConfig
 from yuj.deploy import DeployPlan, deploy_fleet
 from yuj.exceptions import YujError
 from yuj.fleet import Fleet, load_from_csv, load_from_yaml
+from yuj.preflight import local_preflight
 from yuj.probe import probe_fleet
 from yuj.scatter import read_items
 from yuj.status import HostStatus
@@ -124,6 +126,7 @@ def _supervise_config(config: ProjectConfig) -> SuperviseConfig:
             stall_min=config.stall_min,
             active_window=config.active_window,
             off_window_command=config.off_window_command,
+            concurrency=config.concurrency,
         )
     except YujError as exc:
         _die(str(exc))
@@ -141,7 +144,7 @@ def _teardown_config(config: ProjectConfig) -> SuperviseConfig:
 
 def _count_items(config: ProjectConfig) -> int | None:
     """Total work-list size for progress, from scatter.input or input_file."""
-    src = config.scatter.get("input") or config.input_file
+    src = config.input_source
     if not src or not Path(src).is_file():
         return None
     return len(read_items(src))
@@ -178,10 +181,40 @@ def _print_op_table(verb: str, rows: list[tuple[str, bool, str]]) -> None:
         raise typer.Exit(code=1)
 
 
+def _preflight_or_die(config: ProjectConfig, *, push_payload: bool) -> None:
+    """Abort with a clear message if any locally-referenced path is missing."""
+    problems = local_preflight(config, push_payload=push_payload)
+    if problems:
+        _die("pre-flight failed:\n  - " + "\n  - ".join(problems))
+
+
+def _print_canary(fleet: Fleet, cfg: SuperviseConfig, *, timeout_s: int) -> bool:
+    """Dry-run the work command on one host, print the outcome, return ``ok``."""
+    console.print(
+        f"[dim]canary: dry-running work command on one host (≤{timeout_s}s)…[/dim]"
+    )
+    result = run_canary(fleet, cfg, timeout_s=timeout_s)
+    if result.ok:
+        where = f" on {result.host}" if result.host else ""
+        console.print(f"[green]✓ canary passed[/green]{where}: {result.detail}")
+    else:
+        err_console.print(f"[bold red]✗ canary failed[/bold red]: {result.detail}")
+        if result.output:
+            err_console.print(f"[dim]{result.output}[/dim]")
+    return result.ok
+
+
+def do_canary(fleet: Fleet, config: ProjectConfig, *, timeout_s: int) -> None:
+    """Run the standalone canary and exit non-zero if it fails."""
+    if not _print_canary(fleet, _supervise_config(config), timeout_s=timeout_s):
+        raise typer.Exit(code=1)
+
+
 def _do_deploy(
     fleet: Fleet, config: ProjectConfig, *, push_payload: bool, timeout: float
 ) -> None:
     """Deploy to the fleet and print the outcome table (exits on any failure)."""
+    _preflight_or_die(config, push_payload=push_payload)
     results = deploy_fleet(
         fleet, _deploy_plan(config), push_payload=push_payload, timeout=timeout
     )
@@ -195,12 +228,23 @@ def _do_deploy(
 
 
 def _do_submit(
-    fleet: Fleet, config: ProjectConfig, *, start: bool, timeout: float
+    fleet: Fleet,
+    config: ProjectConfig,
+    *,
+    start: bool,
+    timeout: float,
+    canary: bool = True,
+    canary_timeout: int = DEFAULT_TIMEOUT_S,
 ) -> None:
-    """Install supervision on the fleet and print the outcome table."""
-    results = submit_fleet(
-        fleet, _supervise_config(config), start=start, timeout=timeout
-    )
+    """Install supervision on the fleet and print the outcome table.
+
+    Unless ``canary`` is False, first does a single-host dry run of the work
+    command, so a broken job aborts before the watchdog is installed fleet-wide.
+    """
+    cfg = _supervise_config(config)
+    if canary and not _print_canary(fleet, cfg, timeout_s=canary_timeout):
+        _die("aborting submit; fix the work command or pass --no-canary to skip.")
+    results = submit_fleet(fleet, cfg, start=start, timeout=timeout)
     _print_op_table(
         "submit",
         [

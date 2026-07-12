@@ -41,9 +41,16 @@ def _teardown_script(cfg: SuperviseConfig, *, remove_dir: bool) -> str:
     wd = shlex.quote(cfg.watchdog_script)
     run = shlex.quote(cfg.run_script)
     remote_dir = cfg.remote_dir.rstrip("/")
+    pgid_rel = shlex.quote(f".{cfg.job}.run.pgid")
     rm_line = f'rm -rf "$HOME/{remote_dir}"' if remove_dir else "true"
     return _TEARDOWN_TEMPLATE.format(
-        stop=stop, ensure=ensure, wd=wd, run=run, remote_dir=remote_dir, rm_line=rm_line
+        stop=stop,
+        ensure=ensure,
+        wd=wd,
+        run=run,
+        remote_dir=remote_dir,
+        pgid_rel=pgid_rel,
+        rm_line=rm_line,
     )
 
 
@@ -53,9 +60,17 @@ _TEARDOWN_TEMPLATE = """\
 set -u
 me=$$
 parent=${{PPID:-0}}
+mypgid=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
 touch {stop}
 ( crontab -l 2>/dev/null | grep -v {ensure} ) | crontab - 2>/dev/null
 
+# kill the recorded process group; a name-pattern kill would orphan its workers
+pgid=$(cat "$HOME/{remote_dir}/{pgid_rel}" 2>/dev/null | tr -d ' ')
+kill_group() {{
+    sig="$1"
+    [ -n "$pgid" ] && [ "$pgid" != "$mypgid" ] || return 0
+    kill -0 "-$pgid" 2>/dev/null && kill "$sig" "-$pgid" 2>/dev/null
+}}
 kill_job() {{
     sig="$1"; pat="$2"
     for pid in $(pgrep -f "$pat" 2>/dev/null); do
@@ -73,9 +88,9 @@ count_wd() {{
 }}
 
 for _ in 1 2 3 4 5 6; do
-    kill_job -TERM {wd}; kill_job -TERM {run}
+    kill_job -TERM {wd}; kill_group -TERM; kill_job -TERM {run}
     sleep 1
-    kill_job -KILL {wd}; kill_job -KILL {run}
+    kill_job -KILL {wd}; kill_group -KILL; kill_job -KILL {run}
     [ "$(count_wd)" -eq 0 ] && break
     sleep 1
 done

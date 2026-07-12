@@ -50,10 +50,16 @@ class ProjectConfig:
     output_suffix: str = ""
     active_window: str | None = None
     off_window_command: str | None = None
+    concurrency: int = 1
     deploy: Mapping[str, Any] = field(default_factory=dict)
     scatter: Mapping[str, Any] = field(default_factory=dict)
     authorize: Mapping[str, Any] = field(default_factory=dict)
     bootstrap: Mapping[str, Any] = field(default_factory=dict)
+
+    @property
+    def input_source(self) -> str | None:
+        """The work-list path, with ``scatter.input`` overriding ``input_file``."""
+        return self.scatter.get("input") or self.input_file
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> ProjectConfig:
@@ -70,6 +76,7 @@ class ProjectConfig:
             output_suffix=str(data.get("output_suffix", "")),
             active_window=_opt_str(data.get("active_window")),
             off_window_command=_opt_str(data.get("off_window_command")),
+            concurrency=int(data.get("concurrency", 1)),
             deploy=_section(data, "deploy"),
             scatter=_section(data, "scatter"),
             authorize=_section(data, "authorize"),

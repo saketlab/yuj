@@ -19,10 +19,8 @@ mkdir -p "$LOGDIR"
 
 log() { echo "$(date '+%F %T') $*" >>"$LOG"; }
 
-# Kill a run and all its descendants. Each launch is its own process-group
-# leader (setsid), so killing the group reaps workers and their children too;
-# otherwise orphans pile up across relaunches until the host OOMs. Falls back to
-# a pattern kill when there's no pgid (e.g. hosts without setsid, like macOS).
+# Kill a run and all descendants via its setsid process group, else orphans pile
+# up across relaunches until OOM. Pattern-kill fallback when no pgid (e.g. macOS).
 stop_run() {
     local pgid
     pgid=$(cat "$PGID_FILE" 2>/dev/null)
@@ -139,4 +137,6 @@ while [ ! -f "$STOP" ]; do
         log "ok: run=${run_n} age=${age}m"
     fi
 done
-log "stop sentinel present -> exiting"
+# reap the run group before exiting, else stop leaves workers unsupervised
+stop_run
+log "stop sentinel present -> stopped run group and exiting"

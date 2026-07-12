@@ -88,16 +88,41 @@ yuj deploy [--fleet PATH] [--hosts a,b,...] [--no-payload]
 `--no-payload` skips heavy shared data (e.g. a multi-GB cache) and sends only
 the code, the lightweight redistribution path for re-runs.
 
+Aborts before sending anything if a `deploy.code` or `deploy.payload` path in
+`yuj.yaml` doesn't exist locally.
+
 ## `yuj submit`
 
 Install the self-healing watchdog + cron on every host and start the job.
 
 ```bash
 yuj submit [--fleet PATH] [--hosts a,b,...] [--no-start]
+           [--no-canary] [--canary-timeout SECONDS]
 ```
 
+Before installing fleet-wide, a **canary** runs the work command once on one
+reachable host, skipping already-done items like the real loop. If it fails
+fast (bad path, missing dep, import error) submit aborts instead of installing
+a crash-looping watchdog everywhere. A command still running at
+`--canary-timeout` (default 90s) passes.
+
 `--no-start` installs the scripts + cron but doesn't launch the watchdog. Use
-it for staging.
+it for staging. `--no-canary` skips the dry run. To run the canary on its own
+without submitting, see `yuj canary`.
+
+## `yuj canary`
+
+Dry-run the work command once on one host without installing anything. Use it to
+check a `work_command` before launching the whole fleet, or to debug a job that
+fails on the hosts.
+
+```bash
+yuj canary [--fleet PATH] [--hosts a,b,...] [--canary-timeout SECONDS]
+```
+
+Picks the first reachable host (narrow it with `--hosts`); needs the code
+already on the host (`yuj deploy` first). Exits non-zero if the command fails
+fast. This is the same check `yuj submit` runs, minus the install.
 
 ## `yuj run`
 
@@ -106,20 +131,22 @@ submit`.
 
 ```bash
 yuj run [--fleet PATH] [--hosts a,b,...] [--no-payload] [--no-start]
+        [--no-canary] [--canary-timeout SECONDS]
 ```
 
 `--no-payload` skips heavy data already on each host (the lightweight re-run
-path); `--no-start` installs the watchdog without launching it.
+path); `--no-start` installs the watchdog without launching it; `--no-canary`
+skips the pre-submit dry run.
 
 ## `yuj scatter`
 
-Weighted-split a work list and write **each host only its own slice** of items,
+Weighted-split a work list and write each host only its own slice of items,
 so no two hosts process the same item. Without scatter, every host reads the
 full `input_file` (safe, thanks to resume-by-output, but redundant).
 
 ```bash
 yuj scatter [--fleet PATH] [--hosts a,b,...] [--input LIST]
-            [--into FILENAME] [--exclude DONE_FILE]
+            [--into FILENAME] [--exclude DONE_FILE] [--by DIMENSION]
 ```
 
 `--input` is the work list to split (otherwise `scatter.input` from `yuj.yaml`).
@@ -127,10 +154,48 @@ yuj scatter [--fleet PATH] [--hosts a,b,...] [--input LIST]
 `input_file`). `--exclude` points at a file of items to drop before splitting,
 handy for skipping work that's already done.
 
-Item counts follow each host's `weight` (largest-remainder method); zero-weight
-and `do_not_use` hosts get nothing. Re-run any time to re-split, for example
-after editing weights or growing the fleet. Run `yuj scatter` before `yuj
-submit`.
+By default item counts follow each host's static `weight` (largest-remainder
+method); zero-weight and `do_not_use` hosts get nothing. Re-run any time to
+re-split, for example after editing weights or growing the fleet. Run `yuj
+scatter` before `yuj submit`.
+
+```bash
+yuj scatter --fleet /home/saket/github/ingestion-v2/b20_users.csv \
+            --input accessions.txt --into work.txt
+```
+
+### Smart mode: `--by`
+
+`--by` ignores the static weights and splits by live measured capacity, so a
+host that can take more load gets more items. Pick the dimension your work is
+bound by:
+
+| `--by` | Split proportional to | Bound by |
+|--------|-----------------------|----------|
+| `cores` | CPU core count | compute |
+| `mem` | total RAM | memory |
+| `gpu` | total GPU VRAM | GPU jobs |
+| `disk` | free space at `remote_dir` | large outputs |
+| `download` | measured download speed | fetching data |
+
+`yuj scatter --by` probes the fleet first, then splits. If a host is unreachable
+or can't report the chosen dimension (for example, no `curl` for
+`--by download`), yuj drops it from the split and names it in a warning instead
+of handing it an equal share. It prints the resolved per-host weights so you can
+check the split.
+
+```bash
+# download-bound genomics fetch: give faster-downloading boxes more accessions
+yuj scatter --fleet /home/saket/github/ingestion-v2/b20_users.csv \
+            --input accessions.txt --into work.txt --by download
+
+# GPU inference: weight by total VRAM
+yuj scatter -f /home/saket/github/ingestion-v2/b20_users.csv --by gpu
+```
+
+The download test uses NCBI's FTP (`ftp.ncbi.nlm.nih.gov`) by default; override
+it with `scatter.bench_url` in `yuj.yaml`. See [`yuj fleet bench`](#yuj-fleet-bench)
+to inspect those numbers before you scatter.
 
 ## `yuj authorize`
 
@@ -214,11 +279,43 @@ Same as `yuj status` but always one-shot (no live mode).
 yuj fleet probe [--fleet PATH] [--results-glob GLOB]
 ```
 
+## `yuj fleet bench`
+
+Benchmark and rank the fleet by throughput, best host first.
+
+```bash
+yuj fleet bench [--fleet PATH] [--hosts a,b,...] [--sort DIMENSION]
+                [--no-download] [--url URL] [--max-time SECONDS]
+```
+
+`--sort` picks the ranking axis: `cores`, `mem`, `gpu`, `disk`, or `download`
+(default `cores`). The download-speed test runs by default; skip it with
+`--no-download` for an instant hardware-only view (`--sort download` always runs
+it). `--url` overrides the download target (default NCBI FTP), `--max-time` caps
+the test per host.
+
+```bash
+# rank by download speed against NCBI FTP
+yuj fleet bench --fleet /home/saket/github/ingestion-v2/b20_users.csv --sort download
+
+# instant hardware ranking, no network test
+yuj fleet bench -f /home/saket/github/ingestion-v2/b20_users.csv --sort gpu --no-download
+```
+
+The `↓` marks the sorted column (ranking is descending, best host first).
+
+```text
+yuj fleet bench  (by download)
+ #  host      cores   RAM           GPU  disk free  ↓ download
+ 1  gpu-01       32  251G  2x A100-80GB      1800G    118 MB/s  ██████████████
+ 2  node-07      16   62G            -       400G      61 MB/s  ████████
+ -  dead-2   connection timed out
+fleet totals: 48 cores · 313G RAM · 2200G disk free · 179 MB/s aggregate ↓ · 2 GPU(s)  across 2 host(s)
+```
+
 ## `yuj pull`
 
-Rsync outputs from the fleet back to a local directory. One-shot: run it
-whenever you want results, mid-job for a partial pull or after `yuj status`
-shows the batch is done.
+Rsync outputs from the fleet back to a local directory.
 
 ```bash
 yuj pull [--fleet PATH] [--hosts a,b,...] [--dest DIR] [--per-host]
@@ -228,7 +325,7 @@ yuj pull [--fleet PATH] [--hosts a,b,...] [--dest DIR] [--per-host]
 `--per-host` keeps each host's output under `dest/<host>/` instead of merging it
 all into one place.
 
-`yuj pull` doesn't poll. To pull on a schedule, re-run it under `watch` or cron:
+ To pull on a schedule, re-run it under `watch` or cron:
 
 ```bash
 watch -n 60 yuj pull       # pull every 60 seconds
@@ -236,7 +333,7 @@ watch -n 60 yuj pull       # pull every 60 seconds
 
 ## `yuj diagnose`
 
-Classify why hosts are (un)reachable, with fail2ban awareness.
+Classify why hosts are (un)reachable.
 
 ```bash
 yuj diagnose [--fleet PATH] [--hosts a,b,...]
@@ -252,18 +349,18 @@ yuj diagnose [--fleet PATH] [--hosts a,b,...]
 
 ## `yuj storage`
 
-Show disk headroom on each host: free space where the job writes, plus every
-mounted partition. Use it before `deploy` to spot hosts with a full `/` or no
-room for outputs.
+Show disk headroom on each host.Use it before `deploy` to
+spot hosts with a full `/` or no room for outputs.
 
 ```bash
 yuj storage [--fleet PATH] [--hosts a,b,...] [--work-dir PATH]
 ```
 
 The green header line per host reports free space at the work directory
-(`remote_dir` from `yuj.yaml` by default). A `★` in the **work** column marks
-the partition that directory lives on, so you can see the disk your outputs land
-on rather than reading `/home` off the wrong row.
+(`remote_dir` from `yuj.yaml` by default).
+
+A `★` in the **work** column marks the partition that directory lives on,
+so you can see the disk your outputs land.
 
 Pass `--work-dir ~` if you haven't deployed yet. `df` can't measure a
 `remote_dir` that doesn't exist, so it shows `? free at ... (path missing?)`.

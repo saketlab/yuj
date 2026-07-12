@@ -55,6 +55,15 @@ class TestDecommission:
         assert "ensure_watchdog.sh" not in script
         assert "stall_watchdog.sh" not in script
 
+    def test_kills_run_process_group_via_pgid(self) -> None:
+        t = _FakeTransport()
+        decommission(t, CFG)  # type: ignore[arg-type]
+        script = t.runs[0]
+        # kill by recorded pgid, else workers orphan and pile up
+        assert ".yuj-test.run.pgid" in script
+        assert "kill_group" in script
+        assert 'kill "$sig" "-$pgid"' in script
+
     def test_not_ok_if_processes_remain(self) -> None:
         result = decommission(_FakeTransport(procs=2, cron=0), CFG)  # type: ignore[arg-type]
         assert not result.ok

@@ -17,15 +17,26 @@ export YUJ_OUT="$OUTDIR"
 
 # Resume by output-file presence: skip any item whose output already exists.
 # This is the only reliable resume mechanism when a worker crashes mid-write.
-while IFS= read -r item; do
-    [ -z "$item" ] && continue
+run_item() {
+    item="$1"
+    [ -z "$item" ] && return 0
     out="${OUTDIR}/${item}{{ output_suffix }}"
-    if [ -e "$out" ]; then
-        continue
-    fi
+    [ -e "$out" ] && return 0
     # shellcheck disable=SC2086  # work_command is operator-provided; quoting is their call
     {{ work_command }} "$item"
+}
+{% if concurrency and concurrency > 1 %}
+# I/O-bound, so overlap up to {{ concurrency }} items
+export OUTDIR YUJ_OUT
+export -f run_item
+# shellcheck disable=SC2016
+grep -v '^[[:space:]]*$' "$INPUT" \
+    | xargs -P {{ concurrency }} -I '{}' bash -c 'run_item "$@"' _ '{}'
+{% else %}
+while IFS= read -r item; do
+    run_item "$item"
 done < "$INPUT"
+{% endif %}
 {% else %}
 # Batch mode: the work command processes its whole assigned input and is itself
 # responsible for resume (skipping work whose output already exists).

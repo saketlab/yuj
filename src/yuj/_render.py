@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from rich.table import Table
 from rich.text import Text
 
+from yuj.bench import DIMENSION, DIMENSIONS, HostBench
 from yuj.exec_cmd import ExecResult
 from yuj.status import DEFAULT_STALL_MIN, Diagnosis, HostStatus
 from yuj.storage import HostStorage
@@ -219,6 +220,63 @@ def storage_table(
                 Text("★", style="bold green") if is_work else "",
             )
     return table
+
+
+def bench_table(
+    benches: Sequence[HostBench],
+    *,
+    sort_by: str = "cores",
+    title: str = "yuj fleet bench",
+) -> Table:
+    """Throughput dashboard"""
+    ranked_val = {b.name: (b.metric(sort_by) or -1.0) for b in benches}
+    ranked = sorted(
+        benches, key=lambda b: (b.reachable, ranked_val[b.name], b.name), reverse=True
+    )
+    best = max((ranked_val[b.name] for b in benches if b.reachable), default=0.0)
+
+    subtitle = f"{title}  (by {DIMENSION[sort_by].label})"
+    table = Table(title=subtitle, header_style="bold cyan")
+    table.add_column("#", justify="right", style="dim")
+    table.add_column("host", style="bold")
+    for dim in DIMENSIONS:
+        label = DIMENSION[dim].label
+        if dim == sort_by:
+            table.add_column(f"↓ {label}", justify="right", header_style="reverse")
+        else:
+            table.add_column(label, justify="right")
+    table.add_column("", justify="left")
+
+    for rank, b in enumerate(ranked, start=1):
+        if not b.reachable:
+            detail = (b.error or "unreachable").splitlines()[0][:40]
+            pad = [""] * len(DIMENSIONS)
+            table.add_row("-", b.name, Text(detail, style="red"), *pad)
+            continue
+        frac = ranked_val[b.name] / best if best > 0 else 0.0
+        cells = [DIMENSION[dim].cell(b) for dim in DIMENSIONS]
+        table.add_row(
+            str(rank), b.name, *cells, Text(_bar(frac, width=16), style="green")
+        )
+    return table
+
+
+def bench_summary(benches: Sequence[HostBench]) -> str:
+    """Fleet totals footer: total cores/RAM/disk/download and GPU count."""
+    up = [b for b in benches if b.reachable]
+    cores = sum(b.cores or 0 for b in up)
+    mem = sum(b.mem_gb or 0 for b in up)
+    disk = sum(b.disk_gb or 0 for b in up)
+    dl = sum(b.download_mbps or 0.0 for b in up)
+    gpus = sum(b.gpu_count for b in up)
+    down = [b.name for b in benches if not b.reachable]
+    line = (
+        f"fleet totals: {cores} cores · {mem}G RAM · {disk}G disk free"
+        f" · {dl:.0f} MB/s aggregate ↓ · {gpus} GPU(s)  across {len(up)} host(s)"
+    )
+    if down:
+        line += f"; unreachable: {', '.join(down)}"
+    return line
 
 
 def usable_summary(statuses: Sequence[HostStatus]) -> str:

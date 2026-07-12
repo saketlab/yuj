@@ -9,7 +9,8 @@ STOP="{{ stop_sentinel }}"
 WD="$HOME/{{ remote_dir }}/{{ watchdog_script }}"
 # shellcheck disable=SC2009  # bracket-grep on ps args is intentional and portable
 ps -eo args 2>/dev/null | grep -q "[b]ash $WD" && exit 0
-[ -x "$WD" ] || exit 0
+# bash runs it, so readable is enough; +x can be lost on re-sync
+[ -f "$WD" ] || exit 0
 cd "$HOME/{{ remote_dir }}" 2>/dev/null || exit 0
 
 mkdir -p logs

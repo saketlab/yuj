@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 import yuj
 from yuj import cli as cli_module
 from yuj import cli_support as cli_support_module
+from yuj.canary import CanaryResult
 from yuj.cli import app
 from yuj.decommission import DecommissionResult
 from yuj.deploy import DeployResult
@@ -194,6 +195,7 @@ class TestDeploy:
         (tmp_path / "yuj.yaml").write_text(
             "fleet: fleet.csv\nremote_dir: yuj-run\ndeploy:\n  code: [worker.sh]\n"
         )
+        (tmp_path / "worker.sh").write_text("echo hi\n")
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(
             cli_support_module,
@@ -250,7 +252,7 @@ class TestSubmit:
                 for h in fleet
             },
         )
-        result = runner.invoke(app, ["submit"])
+        result = runner.invoke(app, ["submit", "--no-canary"])
         assert result.exit_code == 0
         assert "watchdog=True" in result.stdout
 
@@ -263,6 +265,86 @@ class TestSubmit:
         result = runner.invoke(app, ["submit"])
         assert result.exit_code == 1
         assert "work_command" in result.output
+
+    def test_submit_aborts_when_canary_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._config(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            cli_support_module,
+            "run_canary",
+            lambda fleet, cfg, **kw: CanaryResult(
+                host="h",
+                ok=False,
+                detail="work command failed (exit 1)",
+                output="boom",
+            ),
+        )
+        called = False
+
+        def _fail_if_submitted(*a: object, **k: object) -> dict:
+            nonlocal called
+            called = True
+            return {}
+
+        monkeypatch.setattr(cli_support_module, "submit_fleet", _fail_if_submitted)
+        result = runner.invoke(app, ["submit"])
+        assert result.exit_code == 1
+        assert "canary failed" in result.output
+        assert not called  # aborts before touching the fleet
+
+    def test_deploy_missing_code_aborts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_fleet(tmp_path)
+        (tmp_path / "yuj.yaml").write_text(
+            "fleet: fleet.csv\nremote_dir: yuj-run\ndeploy:\n  code: [worker.sh]\n"
+        )
+        monkeypatch.chdir(tmp_path)  # worker.sh intentionally absent
+        result = runner.invoke(app, ["deploy"])
+        assert result.exit_code == 1
+        assert "pre-flight failed" in result.output
+        assert "deploy.code" in result.output
+
+
+class TestCanary:
+    def _config(self, tmp_path: Path) -> None:
+        _write_fleet(tmp_path)
+        (tmp_path / "yuj.yaml").write_text(
+            "fleet: fleet.csv\njob: b20\nremote_dir: yuj-run\n"
+            "work_command: bash worker.sh\n"
+        )
+
+    def test_canary_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._config(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            cli_support_module,
+            "run_canary",
+            lambda fleet, cfg, **kw: CanaryResult(host="h", ok=True, detail="clean"),
+        )
+        result = runner.invoke(app, ["canary"])
+        assert result.exit_code == 0
+        assert "canary passed" in result.output
+
+    def test_canary_nonzero_exit_on_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._config(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            cli_support_module,
+            "run_canary",
+            lambda fleet, cfg, **kw: CanaryResult(
+                host="h", ok=False, detail="work command failed (exit 1)", output="boom"
+            ),
+        )
+        result = runner.invoke(app, ["canary"])
+        assert result.exit_code == 1
+        assert "canary failed" in result.output
 
 
 class TestProvision:

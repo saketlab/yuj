@@ -69,6 +69,7 @@ class SuperviseConfig:
     cron_minutes: int = 15
     active_window: str | None = None
     off_window_command: str | None = None
+    concurrency: int = 1
 
     def __post_init__(self) -> None:
         if not _JOB_RE.match(self.job):
@@ -156,6 +157,7 @@ def _context(cfg: SuperviseConfig) -> dict[str, object]:
         "stall_min": cfg.stall_min,
         "grace_sec": cfg.grace_sec,
         "cron_minutes": cfg.cron_minutes,
+        "concurrency": cfg.concurrency,
         "run_script": cfg.run_script,
         "watchdog_script": cfg.watchdog_script,
         "ensure_script": cfg.ensure_script,
@@ -285,8 +287,9 @@ def _install_cron(
     transport: Transport, cfg: SuperviseConfig, *, timeout: float
 ) -> None:
     """Install the ensure cron entry, removing any prior copy first (dedupe)."""
+    # -F: literal match, drops only this job's line
     install = (
-        f"( crontab -l 2>/dev/null | grep -v {shlex.quote(cfg.ensure_script)} ; "
+        f"( crontab -l 2>/dev/null | grep -Fv {shlex.quote(cfg.ensure_script)} ; "
         f"echo {shlex.quote(cfg.cron_line)} ) | crontab -"
     )
     transport.run(install, timeout=timeout)
@@ -310,9 +313,12 @@ def _verify(
 ) -> tuple[bool, bool]:
     """Return ``(watchdog_running, cron_installed)`` read back from the host."""
     ensure = shlex.quote(cfg.ensure_script)
+    # job-specific match, else a generic pattern masks a failed start
+    # [b]ash bracket avoids matching our own argv
+    wd_pat = shlex.quote(f"[b]ash .*{cfg.watchdog_script}")
     cmd = (
-        "echo wd=$(ps -eo args 2>/dev/null | grep -c '[y]uj-watchdog'); "
-        f"echo cron=$(crontab -l 2>/dev/null | grep -c {ensure})"
+        f"echo wd=$(ps -eo args 2>/dev/null | grep -c {wd_pat}); "
+        f"echo cron=$(crontab -l 2>/dev/null | grep -Fc {ensure})"
     )
     result = transport.run(cmd, timeout=timeout)
     wd = cron = False

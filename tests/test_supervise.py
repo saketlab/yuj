@@ -117,9 +117,17 @@ class TestSubmit:
         t = _FakeTransport()
         submit(t, CFG)  # type: ignore[arg-type]
         cron_cmd = next(r for r in t.runs if "crontab -" in r)
-        assert "grep -v" in cron_cmd
+        assert "grep -Fv" in cron_cmd  # -F: drop only THIS job's line, keep others
         assert "b20.yuj-ensure.sh" in cron_cmd
         assert "crontab -l" in cron_cmd
+
+    def test_verify_matches_only_this_jobs_watchdog(self) -> None:
+        # regression: a generic watchdog grep counts other jobs' watchdogs on the
+        # account, falsely confirming a submit whose own watchdog never started
+        t = _FakeTransport()
+        submit(t, CFG)  # type: ignore[arg-type]
+        wd_cmd = next(r for r in t.runs if r.startswith("echo wd="))
+        assert "b20.yuj-watchdog.sh" in wd_cmd
 
     def test_starts_watchdog_by_default(self) -> None:
         t = _FakeTransport()
