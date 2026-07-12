@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
@@ -18,8 +19,30 @@ _COMMON_SSH_OPTS: tuple[str, ...] = (
 )
 
 
+def _multiplex_opts() -> list[str]:
+    """Connection-multiplexing options: reuse one master SSH connection per host."""
+    if os.environ.get("YUJ_SSH_NO_MULTIPLEX") or os.name == "nt":
+        return []
+    cm_dir = os.path.expanduser("~/.ssh/cm")
+    try:
+        os.makedirs(cm_dir, mode=0o700, exist_ok=True)
+    except OSError:
+        return []
+    persist = os.environ.get("YUJ_SSH_CONTROL_PERSIST", "10m")
+    # %C = hash of (local host, remote host, port, user)
+    return [
+        "-o",
+        "ControlMaster=auto",
+        "-o",
+        f"ControlPath={cm_dir}/%C",
+        "-o",
+        f"ControlPersist={persist}",
+    ]
+
+
 def _ssh_options(*, strict_host_key: bool, known_hosts_file: str | None) -> list[str]:
     opts = list(_COMMON_SSH_OPTS)
+    opts += _multiplex_opts()
     if strict_host_key:
         opts += ["-o", "StrictHostKeyChecking=yes"]
         if known_hosts_file:

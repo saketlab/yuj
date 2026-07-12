@@ -109,6 +109,19 @@ class TestSshCommand:
         argv = ssh_command(user="u", host="h", remote_command="rm -rf $HOME/x && ls")
         assert argv[-1] == "rm -rf $HOME/x && ls"
 
+    def test_multiplex_on_by_default(self, monkeypatch) -> None:
+        monkeypatch.delenv("YUJ_SSH_NO_MULTIPLEX", raising=False)
+        argv = ssh_command(user="u", host="h", remote_command="ls")
+        assert "ControlMaster=auto" in argv
+        assert any(a.startswith("ControlPath=") for a in argv)
+        assert any(a.startswith("ControlPersist=") for a in argv)
+
+    def test_multiplex_opt_out(self, monkeypatch) -> None:
+        monkeypatch.setenv("YUJ_SSH_NO_MULTIPLEX", "1")
+        argv = ssh_command(user="u", host="h", remote_command="ls")
+        assert "ControlMaster=auto" not in argv
+        assert not any(a.startswith("ControlPath=") for a in argv)
+
 
 class TestRsyncCommand:
     def test_basic_flags(self) -> None:
