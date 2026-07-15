@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from math import isfinite
 
 from yuj.exceptions import SplitError
 
@@ -24,26 +25,25 @@ class _Quota:
 def weighted_split(
     items: Sequence[str],
     weights: Mapping[str, float],
+    *,
+    cost: Callable[[str], float] | None = None,
 ) -> Assignment:
     """Split ``items`` across hosts proportionally to ``weights``.
 
-    Uses the largest-remainder (Hamilton) method: each host gets
-    ``floor(weight_share * n)`` items, then the leftover items go one each to the
-    hosts with the largest fractional remainders. Counts therefore sum to exactly
-    ``len(items)`` with no item dropped or duplicated. Allocation is deterministic
-    for a given ``(items, weights)`` and follows the iteration order of
-    ``weights`` for tie-breaks.
+    Uses largest-remainder by item count. With ``cost``, treats weights as rates
+    and places higher-cost items by earliest completion time.
 
     Args:
         items: The ordered batch to divide. Duplicates are preserved as-is.
         weights: Per-host weight. A weight of 0 drains that host (it gets nothing).
+        cost: Optional per-item cost used to balance work instead of item count.
 
     Returns:
         An :data:`Assignment`: every host in ``weights`` appears as a key.
 
     Raises:
-        SplitError: If there are no hosts, any weight is negative, or the total
-            weight is zero while there are items to place.
+        SplitError: If there are no hosts, any weight/cost is invalid, or the
+            total weight is zero while there are items to place.
     """
     if not weights:
         raise SplitError("cannot split work: no hosts given")
@@ -63,11 +63,52 @@ def weighted_split(
             hint="give at least one host a positive weight",
         )
 
+    if cost is not None:
+        return _lpt_split(items, weights, cost)
+
     quotas = _largest_remainder(names, weights, total, n)
     cursor = 0
     for quota in quotas:
         assignment[quota.name] = list(items[cursor : cursor + quota.count])
         cursor += quota.count
+    return assignment
+
+
+def _lpt_split(
+    items: Sequence[str],
+    weights: Mapping[str, float],
+    cost: Callable[[str], float],
+) -> Assignment:
+    """Place costed items greedily by earliest weighted completion time."""
+    eligible = [name for name in weights if weights[name] > 0]
+    if not eligible:
+        raise SplitError(
+            "cannot split work: every host has zero weight",
+            hint="give at least one host a positive weight",
+        )
+    assignment: Assignment = {name: [] for name in weights}
+    load = dict.fromkeys(eligible, 0.0)
+    costed: list[tuple[int, str, float]] = []
+    for idx, item in enumerate(items):
+        item_cost = cost(item)
+        if not isfinite(item_cost) or item_cost < 0:
+            raise SplitError(
+                f"cost for item {item!r} must be a finite non-negative number, "
+                f"got {item_cost!r}"
+            )
+        costed.append((idx, item, item_cost))
+
+    costed.sort(key=lambda entry: (-entry[2], entry[0]))
+    for _, item, item_cost in costed:
+        host = min(
+            eligible,
+            key=lambda name: (
+                (load[name] + item_cost) / weights[name],
+                -weights[name],
+            ),
+        )
+        assignment[host].append(item)
+        load[host] += item_cost
     return assignment
 
 
@@ -100,6 +141,7 @@ def redistribute(
     is_done: Callable[[str], bool],
     *,
     trim_only: bool,
+    cost: Callable[[str], float] | None = None,
 ) -> Assignment:
     """Rebalance remaining work across the fleet.
 
@@ -112,6 +154,9 @@ def redistribute(
             pushed anywhere (the light path). If False, pool every remaining item
             and re-split by ``weights`` (the heavy path: moved items imply pushing
             the recipient any shared payload they lack).
+        cost: Optional per-item cost, forwarded to :func:`weighted_split` so the
+            re-split balances work rather than item count. Ignored when
+            ``trim_only`` is True (nothing moves).
 
     Returns:
         A new :data:`Assignment` over the hosts named in ``weights``.
@@ -140,7 +185,7 @@ def redistribute(
             if item not in seen and not is_done(item):
                 seen.add(item)
                 pooled.append(item)
-    return weighted_split(pooled, weights)
+    return weighted_split(pooled, weights, cost=cost)
 
 
 def _largest_remainder(

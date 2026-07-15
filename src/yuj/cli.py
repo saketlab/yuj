@@ -66,6 +66,7 @@ from yuj.provision import (
     provision_fleet,
 )
 from yuj.pull import pull_once
+from yuj.rebalance import rebalance_once
 from yuj.rescue import (
     DEFAULT_ATTEMPTS,
     DEFAULT_CONNECT_TIMEOUT,
@@ -75,6 +76,7 @@ from yuj.rescue import (
 from yuj.scaffolds import scaffold_files
 from yuj.scatter import read_items, scatter_fleet
 from yuj.storage import storage_fleet
+from yuj.supervise import stop as supervise_stop
 from yuj.transport import make_transport
 
 app = typer.Typer(
@@ -946,6 +948,139 @@ def pull(
             for name, r in sorted(results.items())
         ],
     )
+
+
+def _stop_fleet(
+    fleet: Fleet, config: ProjectConfig, *, timeout: float = 30.0
+) -> dict[str, str]:
+    """Set the stop sentinel on each host; return per-host failures."""
+    cfg = _teardown_config(config)
+
+    def _one(host: Host) -> str | None:
+        try:
+            supervise_stop(make_transport(host), cfg, timeout=timeout)
+        except YujError as exc:
+            return str(exc)
+        return None
+
+    results = map_fleet(fleet, _one, max_workers=8)
+    return {name: error for name, error in results.items() if error}
+
+
+@app.command()
+def rebalance(
+    fleet_path: _FleetOpt = None,
+    hosts: _HostsOpt = None,
+    input_path: Annotated[
+        str | None,
+        typer.Option("--input", help="Work list (else scatter.input/input_file)."),
+    ] = None,
+    into: Annotated[
+        str | None,
+        typer.Option("--into", help="Per-host slice filename (else scatter.into)."),
+    ] = None,
+    dest: Annotated[
+        str,
+        typer.Option("--dest", "-d", help="Local results dir to read done-set from."),
+    ] = "results",
+    by: Annotated[
+        str | None,
+        typer.Option(
+            "--by",
+            help=f"Weight the re-split by live capacity: {'/'.join(DIMENSIONS)} "
+            "(default: static fleet weights).",
+        ),
+    ] = None,
+    watch: Annotated[
+        float | None,
+        typer.Option(
+            "--watch", help="Loop every N seconds until done (default: one tick)."
+        ),
+    ] = None,
+    restart: Annotated[
+        bool,
+        typer.Option(
+            "--restart",
+            help="Re-submit each tick so hosts read the new slice now. Kicks "
+            "in-progress downloads; use only when the remaining tail is cheap.",
+        ),
+    ] = False,
+    max_ticks: Annotated[
+        int,
+        typer.Option("--max-ticks", help="Safety cap on --watch loop iterations."),
+    ] = 200,
+    timeout: Annotated[float, typer.Option(help="Per-host op timeout (s).")] = 300.0,
+) -> None:
+    """Pull results, re-scatter unfinished items, and optionally loop."""
+    fleet, config = _load(fleet_path)
+    fleet = _select_hosts(fleet, hosts)
+    if watch is not None and watch <= 0:
+        _die("--watch must be positive.")
+    if max_ticks < 1:
+        _die("--max-ticks must be positive.")
+    src = input_path or config.input_source
+    dest_name = into or config.scatter.get("into") or config.input_file
+    if not src:
+        _die("rebalance needs a work list (--input or yuj.yaml scatter.input).")
+    if not dest_name:
+        _die("rebalance needs a target filename (--into or yuj.yaml scatter.into).")
+    if not config.output_dir:
+        _die("rebalance needs output_dir in yuj.yaml to locate results.")
+    try:
+        worklist = read_items(src)
+    except OSError as exc:
+        _die(f"could not read work list {src!r}: {exc}")
+    header = config.scatter.get("header")
+
+    tick_no = 0
+    while True:
+        tick_no += 1
+        target = _smart_reweight(fleet, config, by, timeout=timeout) if by else fleet
+        tick = rebalance_once(
+            target,
+            worklist,
+            remote_dir=config.remote_dir,
+            output_dir=config.output_dir,
+            into=str(dest_name),
+            dest_dir=dest,
+            output_suffix=config.output_suffix,
+            header=str(header) if header else None,
+            scatter_timeout=timeout,
+            pull_fleet=fleet,
+        )
+        console.print(
+            f"[bold]rebalance tick {tick_no}[/bold]: "
+            f"done [green]{tick.done:,}[/green]/{tick.total:,}  "
+            f"remaining [bold]{tick.remaining:,}[/bold]  "
+            f"(pulled {tick.pulled_hosts} host(s), "
+            f"scattered {tick.scattered:,} across {tick.scatter_hosts})"
+        )
+        if tick.scatter_errors:
+            joined = ", ".join(
+                f"{n}: {e}" for n, e in sorted(tick.scatter_errors.items())
+            )
+            console.print(f"[yellow]scatter errors: {joined}[/yellow]")
+        if tick.complete:
+            stop_errors = _stop_fleet(fleet, config)
+            if stop_errors:
+                joined = ", ".join(f"{n}: {e}" for n, e in sorted(stop_errors.items()))
+                console.print(f"[yellow]stop errors: {joined}[/yellow]")
+            else:
+                console.print(
+                    "[green]all items done; stop sentinel set fleet-wide[/green]"
+                )
+            break
+        if restart:
+            _do_submit(target, config, start=True, timeout=timeout, canary=False)
+        if not watch:
+            break
+        if tick_no >= max_ticks:
+            console.print(
+                f"[yellow]hit --max-ticks {max_ticks}; "
+                f"{tick.remaining:,} still remaining[/yellow]"
+            )
+            break
+        time.sleep(watch)
 
 
 @app.command()
