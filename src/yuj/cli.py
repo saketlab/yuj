@@ -567,6 +567,13 @@ def bootstrap(
     check: Annotated[
         bool, typer.Option("--check", help="Dry-run: report, install nothing.")
     ] = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Re-run even if already bootstrapped (re-installs deps; never deletes).",
+        ),
+    ] = False,
     max_workers: Annotated[
         int, typer.Option("--max-workers", help="Per-fleet concurrency cap.")
     ] = 4,
@@ -590,6 +597,7 @@ def bootstrap(
             remote_dir=config.remote_dir,
             from_tarball=from_tarball or bcfg.get("from_tarball"),
             check=check,
+            force=force,
         )
     except YujError as exc:
         _die(str(exc))

@@ -82,6 +82,11 @@ class TestScript:
         assert ".yuj-bootstrap-marker" in script
         assert "ALREADY-BOOTSTRAPPED" in script
 
+    def test_force_skips_already_bootstrapped_guard(self) -> None:
+        script = build_bootstrap_script(BootstrapConfig(env_manager="uv", force=True))
+        assert "ALREADY-BOOTSTRAPPED" not in script
+        assert "--force" in script
+
     def test_check_mode_installs_nothing(self) -> None:
         script = build_bootstrap_script(BootstrapConfig(env_manager="uv", check=True))
         assert "[dry-run] would install" in script

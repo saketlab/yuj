@@ -70,6 +70,8 @@ class BootstrapConfig:
         from_tarball: Optional pre-downloaded installer/env tarball on the host
             (for offline compute nodes); extracted instead of curl-installing.
         check: Dry-run; report what would happen, install nothing.
+        force: Re-run even if the marker exists; re-installs deps (idempotent).
+            Never deletes the venv. Use to recover a stale/incomplete bootstrap.
     """
 
     env_manager: str = "uv"
@@ -79,6 +81,7 @@ class BootstrapConfig:
     remote_dir: str = "yuj-run"
     from_tarball: str | None = None
     check: bool = False
+    force: bool = False
 
     def __post_init__(self) -> None:
         if self.env_manager not in ENV_MANAGERS:
@@ -148,6 +151,26 @@ def build_bootstrap_script(cfg: BootstrapConfig) -> str:
         )
     env_materialize = _env_materialize(cfg) if not cfg.check else "true"
     env_sh = _env_sh_body(cfg, spec)
+    # --force skips the "already bootstrapped, exit 0" early return.
+    marker_guard = (
+        'echo "re-running bootstrap (--force)"'
+        if cfg.force
+        else (
+            f'if [ -f "$MARKER" ] && {spec.check} >/dev/null 2>&1; then\n'
+            f'    echo "ALREADY-BOOTSTRAPPED ($(cat "$MARKER"))"\n'
+            f"    exit 0\n"
+            f"fi"
+        )
+    )
+    # Atomic marker write: temp file + mv, so a marker is never half-written.
+    write_marker = (
+        "true"
+        if cfg.check
+        else (
+            f'date "+bootstrapped %F %T {cfg.env_manager}" > "$MARKER.tmp" '
+            f'&& mv "$MARKER.tmp" "$MARKER"'
+        )
+    )
     return _SCRIPT_TEMPLATE.format(
         manager=cfg.env_manager,
         check_cmd=spec.check,
@@ -156,16 +179,13 @@ def build_bootstrap_script(cfg: BootstrapConfig) -> str:
         remote=remote,
         remote_dir=cfg.remote_dir,
         marker=marker,
+        marker_guard=marker_guard,
         tarball=tarball,
         env_materialize=env_materialize,
         recipes=recipes,
         env_sh=env_sh,
         dry=" (dry-run)" if cfg.check else "",
-        write_marker=(
-            "true"
-            if cfg.check
-            else f'date "+bootstrapped %F %T {cfg.env_manager}" > "$MARKER"'
-        ),
+        write_marker=write_marker,
     )
 
 
@@ -282,17 +302,16 @@ def _env_sh_body(cfg: BootstrapConfig, spec: _ManagerSpec) -> str:
 _SCRIPT_TEMPLATE = """\
 #!/usr/bin/env bash
 # yuj bootstrap{dry}: generated; safe to re-run.
-set -uo pipefail
+# -e so a failed install/recipe aborts before the marker is written; a
+# half-bootstrapped host must not report success and get skipped on re-run.
+set -euo pipefail
 mkdir -p "$HOME/{remote}"
 MARKER="{marker}"
 # Put the manager's bindir on PATH *before* the idempotency check, since a
 # non-interactive ssh shell won't have ~/.local/bin etc. on PATH by default.
 export PATH="{bindir}:$HOME/.local/bin:$PATH"
 
-if [ -f "$MARKER" ] && {check_cmd} >/dev/null 2>&1; then
-    echo "ALREADY-BOOTSTRAPPED ($(cat "$MARKER"))"
-    exit 0
-fi
+{marker_guard}
 
 {tarball}
 
@@ -304,13 +323,17 @@ else
     export PATH="{bindir}:$HOME/.local/bin:$PATH"
 fi
 
+# cd here before materializing so relative env files (requirements.txt/
+# environment.yaml) resolve in the deploy dir, not $HOME. No `|| true`: a
+# missing deploy dir must abort, not install from the wrong cwd.
+export YUJ_REMOTE_DIR="$HOME/{remote}"
+cd "$HOME/{remote}"
+
 echo "materializing environment..."
 {env_materialize}
 
 # Recipes run with cwd = the deploy dir and YUJ_REMOTE_DIR set, so they can find
 # deployed files like r-packages.txt.
-export YUJ_REMOTE_DIR="$HOME/{remote}"
-cd "$HOME/{remote}" || true
 {recipes}
 
 echo "writing env.sh..."
@@ -319,6 +342,7 @@ cat > "$HOME/{remote}/env.sh" <<'YUJ_ENV_SH'
 {env_sh}
 YUJ_ENV_SH
 
+# Marker written last (set -e means we only reach here on full success).
 {write_marker}
 echo "BOOTSTRAP-OK"
 """

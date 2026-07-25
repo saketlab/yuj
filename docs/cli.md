@@ -66,7 +66,7 @@ Install an environment manager + extras on every host (idempotent, no root).
 ```bash
 yuj bootstrap [--fleet PATH] [--hosts a,b,...] [--env-manager uv|pixi|micromamba|conda]
               [--python 3.12] [--extras OLLAMA,R] [--env-file PATH]
-              [--from-tarball REMOTE_PATH] [--check] [--max-workers 4]
+              [--from-tarball REMOTE_PATH] [--check] [--force] [--max-workers 4]
 ```
 
 `--env-manager` picks which manager to install. `--extras` takes a comma-list of
@@ -74,7 +74,9 @@ named bundles: `R`, `OLLAMA`, `SHELLCHECK`, `RCLONE`. `--env-file` points at
 an environment spec already deployed with your project. `--from-tarball` uses a
 pre-staged remote tarball instead of fetching an installer live, which is the
 reproducible/offline path for pinned bootstrap assets. `--check` does a dry run,
-installing nothing. Keep `--max-workers` low (default 4) so parallel SSH logins
+installing nothing. `--force` re-runs on a host that already has the marker
+(re-installs deps, never deletes the env), to recover a stale or half-finished
+bootstrap. Keep `--max-workers` low (default 4) so parallel SSH logins
 don't trip fail2ban.
 
 ## `yuj deploy`
@@ -271,6 +273,23 @@ yuj status --total 36782 --html status.html --watch 30 --open
 
 Without `--watch` it writes once and exits.
 
+## `yuj usable`
+
+List the hosts you can send work to right now: reachable, not `do_not_use`, and
+no owner at the console.
+
+```bash
+yuj usable [--fleet PATH] [--hosts a,b,...] [--names-only]
+```
+
+Prints a `status`-style table of ready hosts plus a summary counting the ones
+held back and why. `--names-only` drops the table and prints one host name per
+line, so you can pipe it into `--hosts`:
+
+```bash
+yuj deploy --hosts "$(yuj usable --names-only | paste -sd,)"
+```
+
 ## `yuj fleet probe`
 
 Same as `yuj status` but always one-shot (no live mode).
@@ -331,6 +350,32 @@ all into one place.
 watch -n 60 yuj pull       # pull every 60 seconds
 ```
 
+## `yuj rebalance`
+
+Pull results, work out which items are still unfinished, and re-scatter them
+across the fleet so a few slow hosts don't hold up the tail of a job.
+
+```bash
+yuj rebalance [--fleet PATH] [--hosts a,b,...] [--input PATH] [--into NAME]
+              [--dest DIR] [--by DIMENSION] [--watch S] [--restart] [--max-ticks N]
+```
+
+One tick pulls outputs into `--dest` (default `results`), diffs them against the
+full work list (`--input`, else `scatter.input`/`input_file`) to find what's
+left, and re-splits the remainder into each host's slice file (`--into`, else
+`scatter.into`). It reads `output_dir` from `yuj.yaml` to locate results. When
+nothing remains it sets the stop sentinel fleet-wide and exits.
+
+`--by` weights the re-split by live capacity (`cores`/`mem`/`gpu`/`disk`/`download`)
+instead of static fleet weights, so faster hosts get more of the tail. `--watch S`
+loops every S seconds until done (capped by `--max-ticks`, default 200) rather
+than running a single tick.
+
+`--restart` re-submits after each tick so hosts pick up their new slice at once.
+This kicks any in-progress work, so use it only when the remaining tail is cheap
+to redo. Otherwise let the running loops finish their current item and read the
+new slice on the next pass.
+
 ## `yuj diagnose`
 
 Classify why hosts are (un)reachable.
@@ -346,6 +391,24 @@ yuj diagnose [--fleet PATH] [--hosts a,b,...]
 | `banner fail` | TCP connects, SSH drops (classic fail2ban) |
 | `sshd down` | Port 22 closed / refused |
 | `net down` | No route / timeout |
+
+## `yuj rescue`
+
+Revive hosts wedged by an OOM spike: retry the brief windows when `sshd` accepts
+a connection again, then kill the orphaned processes eating the box.
+
+```bash
+yuj rescue [--fleet PATH] [--hosts a,b,...] [--attempts N] [--interval S]
+           [--connect-timeout S] [--keep-cron] [--pattern name1,name2]
+```
+
+With no `--hosts` (or `--hosts all`), rescue first runs `diagnose` and only
+targets hosts that aren't already healthy. Name hosts explicitly to rescue them
+regardless. By default it kills all of the SSH user's processes and strips the
+relaunch cron so the watchdog doesn't immediately re-spawn the load; `--keep-cron`
+leaves the cron in place, and `--pattern` narrows the kill to named processes.
+`--attempts`/`--interval`/`--connect-timeout` tune how hard it retries the flaky
+`sshd` window.
 
 ## `yuj storage`
 
