@@ -571,7 +571,7 @@ def bootstrap(
         bool,
         typer.Option(
             "--force",
-            help="Re-run even if already bootstrapped (re-installs deps; never deletes).",
+            help="Re-run even if bootstrapped (re-installs deps; never deletes).",
         ),
     ] = False,
     max_workers: Annotated[
