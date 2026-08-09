@@ -10,7 +10,10 @@ from yuj.exec_cmd import exec_on_host
 from yuj.probe import probe_fleet
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from yuj.fleet import Fleet
+    from yuj.status import HostStatus
     from yuj.supervise import SuperviseConfig
 
 _TIMEOUT_RC = 124  # GNU `timeout` exit code when it kills the command
@@ -66,12 +69,18 @@ def _input_body(cfg: SuperviseConfig) -> str:
 def canary_script(cfg: SuperviseConfig, *, timeout_s: int) -> str:
     """Bash reproducing ``run_chunk``'s first pending iteration, timeout-bounded."""
     body = _input_body(cfg) if cfg.input_file else _batch_body(cfg)
+    placement = (
+        [f'export GPUS="{cfg.gpus}"', f'export WORKERS_PER_GPU="{cfg.workers_per_gpu}"']
+        if cfg.gpus
+        else []
+    )
     script = "\n".join(
         [
             "set -uo pipefail",
             f'cd "$HOME/{cfg.remote_dir}" || '
             '{ echo "yuj-canary: remote_dir missing" >&2; exit 1; }',
             "[ -f env.sh ] && . ./env.sh",
+            *placement,
             body,
         ]
     )
@@ -110,21 +119,27 @@ def run_canary(
     *,
     timeout_s: int = DEFAULT_TIMEOUT_S,
     connect_timeout: int = 20,
+    statuses: Sequence[HostStatus] | None = None,
 ) -> CanaryResult:
-    """Run the canary on a reachable host and classify the result."""
+    """Run the canary on a reachable host and classify the result.
+
+    ``statuses`` reuses a probe the caller already paid for.
+    """
     usable = fleet.usable
-    statuses = probe_fleet(usable, connect_timeout=connect_timeout)
-    reachable = [s.name for s in statuses if s.reachable]
+    if statuses is None:
+        statuses = probe_fleet(usable, connect_timeout=connect_timeout)
+    names = set(usable.names)
+    reachable = [s.name for s in statuses if s.reachable and s.name in names]
     if not reachable:
         return CanaryResult(
             host=None, ok=True, detail="no reachable host to canary; skipped"
         )
     by_name = {h.name: h for h in usable}
-    script = canary_script(cfg, timeout_s=timeout_s)
     for name in reachable:
+        host = by_name[name]
         res = exec_on_host(
-            by_name[name],
-            script,
+            host,
+            canary_script(cfg.for_host(host), timeout_s=timeout_s),
             connect_timeout=connect_timeout,
             timeout=timeout_s + 30,  # outlast the remote `timeout` to read its code
         )

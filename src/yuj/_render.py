@@ -9,6 +9,7 @@ from rich.text import Text
 
 from yuj.bench import DIMENSION, DIMENSIONS, HostBench
 from yuj.exec_cmd import ExecResult
+from yuj.sizing import SizingPlan
 from yuj.status import DEFAULT_STALL_MIN, Diagnosis, HostStatus
 from yuj.storage import HostStorage
 
@@ -219,6 +220,30 @@ def storage_table(
                 f"{part.use_pct}%",
                 Text("★", style="bold green") if is_work else "",
             )
+    return table
+
+
+def sizing_table(
+    statuses: Sequence[HostStatus],
+    plans: Mapping[str, SizingPlan],
+    *,
+    title: str = "yuj autotune",
+) -> Table:
+    """One row per host: workers, the resource that capped it, and its cards."""
+    table = Table(title=title, header_style="bold cyan")
+    table.add_column("host", style="bold")
+    table.add_column("workers", justify="right")
+    table.add_column("limited by")
+    table.add_column("gpus")
+    for status in statuses:
+        plan = plans.get(status.name)
+        if plan is None:
+            detail = (status.error or "unreachable").splitlines()[0][:40]
+            table.add_row(status.name, "-", Text(detail, style="red"), "")
+            continue
+        capped = Text(plan.limited_by, style="" if plan.usable else "yellow")
+        workers = str(plan.total_workers) if plan.usable else "skipped"
+        table.add_row(status.name, workers, capped, plan.gpus_env or "-")
     return table
 
 

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 
 from yuj.exceptions import AuthError, CommandTimeout, TransportError, YujError
 from yuj.fleet import Fleet, Host, map_fleet
 from yuj.shell_safety import validate_remote_glob
-from yuj.status import Diagnosis, HostStatus
+from yuj.status import Diagnosis, Gpu, HostStatus
 from yuj.transport import is_auth_failure, make_transport
 
 _BEGIN = "YUJSTATUS"
@@ -16,6 +17,19 @@ _END = "YUJEND"
 WATCHDOG_MARKER = "yuj-watchdog"
 DEFAULT_PROBE_TIMEOUT = 20.0
 DEFAULT_MAX_WORKERS = 8
+
+# uuid is the only key nvidia-smi reports for compute processes
+_GPU_PROBE = r"""
+nvidia-smi --query-gpu=index,name,memory.total,memory.used,uuid \
+  --format=csv,noheader,nounits 2>/dev/null | sed 's/^/gpu:/'
+procs=$(nvidia-smi --query-compute-apps=gpu_uuid,pid --format=csv,noheader,nounits \
+  2>/dev/null)
+if [ -n "$procs" ]; then
+  printf '%s\n' "$procs" | sed 's/^/gpuproc:/'
+  pids=$(printf '%s' "$procs" | cut -d, -f2 | tr -d ' ' | tr '\n' ',')
+  ps -o pid=,user=,args= -p "${pids%,}" 2>/dev/null | sed 's/^/pid:/'
+fi
+"""
 
 
 def _script_grep(job: str, script: str) -> str:
@@ -43,11 +57,9 @@ def _status_command(results_glob: str, job: str | None = None) -> str:
         "printf 'host=%s\\n' \"$(hostname 2>/dev/null)\"",
         "printf 'load=%s\\n' \"$(cut -d' ' -f1 /proc/loadavg 2>/dev/null)\"",
         "printf 'nproc=%s\\n' \"$(nproc 2>/dev/null)\"",
-        "printf 'mem=%s\\n' \"$(free -g 2>/dev/null | awk '/Mem/{print $2}')\"",
+        "free -g 2>/dev/null | awk '/Mem/{printf \"mem=%s\\nmemavail=%s\\n\",$2,$7}'",
         "printf 'cpu=%s\\n' \"$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null"
         " | cut -d: -f2- | sed 's/^ *//')\"",
-        "printf 'gpu=%s\\n' \"$(nvidia-smi --query-gpu=name,memory.total"
-        ' --format=csv,noheader 2>/dev/null | head -1)"',
         f"printf 'outputs=%s\\n' \"$(ls -t {glob} 2>/dev/null | wc -l)\"",
         f'newest="$(ls -t {glob} 2>/dev/null | head -1)";'
         " if [ -n \"$newest\" ]; then printf 'age=%s\\n'"
@@ -61,6 +73,7 @@ def _status_command(results_glob: str, job: str | None = None) -> str:
         lines.append(
             f"printf 'cron=%s\\n' \"$(crontab -l 2>/dev/null | grep -c '{cron}')\""
         )
+    lines.append(_GPU_PROBE.strip())
     lines.append(f"printf '{_END}\\n'")
     return "\n".join(lines)
 
@@ -68,6 +81,7 @@ def _status_command(results_glob: str, job: str | None = None) -> str:
 def parse_status(stdout: str, host: Host) -> HostStatus:
     """Parse the YUJSTATUS/YUJEND key=value block into a :class:`HostStatus`."""
     fields = _extract_fields(stdout)
+    gpus = parse_gpus(stdout)
     return HostStatus(
         name=host.name,
         ip=host.ip,
@@ -77,7 +91,9 @@ def parse_status(stdout: str, host: Host) -> HostStatus:
         cpu_model=_short_cpu(fields.get("cpu")),
         nproc=_to_int(fields.get("nproc")),
         mem_gb=_to_int(fields.get("mem")),
-        gpu=_short_gpu(fields.get("gpu")),
+        mem_avail_gb=_to_int(fields.get("memavail")),
+        gpu=_short_gpu(gpus[0]) if gpus else None,
+        gpus=gpus,
         load1=_to_float(fields.get("load")),
         n_outputs=_to_int(fields.get("outputs")),
         newest_age_min=_to_int(fields.get("age")),
@@ -215,6 +231,50 @@ def _extract_fields(stdout: str) -> dict[str, str]:
     return fields
 
 
+def parse_gpus(stdout: str) -> tuple[Gpu, ...]:
+    """Join the probe's ``gpu:``, ``gpuproc:`` and ``pid:`` lines into cards."""
+    cards: dict[str, Gpu] = {}
+    pids: dict[str, list[str]] = {}
+    owners: dict[str, tuple[str, str]] = {}
+    for raw in stdout.splitlines():
+        line = raw.strip()
+        if line.startswith("gpu:"):
+            # split from both ends; card names can contain commas
+            head, _, rest = line.removeprefix("gpu:").partition(",")
+            fields_ = rest.rsplit(",", 3)
+            if len(fields_) < 4:
+                continue
+            name, total_s, used_s, uuid = (f.strip() for f in fields_)
+            index, total, used = _to_int(head), _to_int(total_s), _to_int(used_s)
+            if index is None or total is None or used is None:
+                continue
+            cards[uuid] = Gpu(index, name, total, used)
+        elif line.startswith("gpuproc:"):
+            uuid, _, pid = line.removeprefix("gpuproc:").partition(",")
+            if pid.strip():
+                pids.setdefault(uuid.strip(), []).append(pid.strip())
+        elif line.startswith("pid:"):
+            pid, _, rest = line.removeprefix("pid:").strip().partition(" ")
+            user, _, command = rest.strip().partition(" ")
+            if pid and user:
+                owners[pid] = (user, command.strip())
+    # unmatched uuid (MIG): busy, but we cannot tell which card, so charge all
+    orphans = [
+        owners[p] for u, ps in pids.items() if u not in cards for p in ps if p in owners
+    ]
+    found = []
+    for uuid, card in cards.items():
+        procs = [owners[p] for p in pids.get(uuid, ()) if p in owners] + orphans
+        found.append(
+            replace(
+                card,
+                users=tuple(dict.fromkeys(u for u, _ in procs)),
+                commands=tuple(c for _, c in procs if c),
+            )
+        )
+    return tuple(sorted(found, key=lambda g: g.index))
+
+
 def _short_cpu(model: str | None) -> str | None:
     """Trim a noisy CPU model string to something column-friendly."""
     if not model:
@@ -225,16 +285,11 @@ def _short_cpu(model: str | None) -> str | None:
     return cleaned[:24] or None
 
 
-def _short_gpu(raw: str | None) -> str | None:
-    """Turn ``"NVIDIA A40, 46068 MiB"`` into ``"A40 45G"`` (or None)."""
-    if not raw:
-        return None
-    name, _, mem = raw.partition(",")
-    name = name.replace("NVIDIA", "").replace("GeForce", "").strip()
-    mib = re.search(r"\d+", mem)
-    if mib:
-        gib = round(int(mib.group()) / 1024)
-        return f"{name} {gib}G".strip()
+def _short_gpu(gpu: Gpu) -> str | None:
+    """Turn a card into a column-friendly ``"A40 45G"``."""
+    name = gpu.name.replace("NVIDIA", "").replace("GeForce", "").strip()
+    if gpu.mem_total_mb:
+        return f"{name} {round(gpu.mem_total_mb / 1024)}G".strip()
     return name or None
 
 

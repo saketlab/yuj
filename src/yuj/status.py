@@ -13,6 +13,32 @@ DEFAULT_STALL_MIN = 90
 
 
 @dataclass(frozen=True)
+class Gpu:
+    """One GPU as seen on the host, with who else is computing on it."""
+
+    index: int
+    name: str
+    mem_total_mb: int
+    mem_used_mb: int
+    users: tuple[str, ...] = ()
+    commands: tuple[str, ...] = ()
+
+    @property
+    def free_mb(self) -> int:
+        return max(0, self.mem_total_mb - self.mem_used_mb)
+
+    def shared_with_others(self, me: str, own_marker: str = "") -> bool:
+        """True when work that is not ours runs here.
+
+        Another user always counts; with ``own_marker`` so do our own
+        processes that do not match it.
+        """
+        if any(u and u != me for u in self.users):
+            return True
+        return bool(own_marker) and any(own_marker not in c for c in self.commands)
+
+
+@dataclass(frozen=True)
 class HostStatus:
     """A point-in-time snapshot of one host."""
 
@@ -23,7 +49,9 @@ class HostStatus:
     cpu_model: str | None = None
     nproc: int | None = None
     mem_gb: int | None = None
+    mem_avail_gb: int | None = None
     gpu: str | None = None
+    gpus: tuple[Gpu, ...] = ()
     load1: float | None = None
     n_outputs: int | None = None
     newest_age_min: int | None = None

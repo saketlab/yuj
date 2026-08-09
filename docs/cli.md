@@ -99,7 +99,7 @@ Install the self-healing watchdog + cron on every host and start the job.
 
 ```bash
 yuj submit [--fleet PATH] [--hosts a,b,...] [--no-start]
-           [--no-canary] [--canary-timeout SECONDS]
+           [--no-canary] [--canary-timeout SECONDS] [--autotune]
 ```
 
 Before installing fleet-wide, a **canary** runs the work command once on one
@@ -111,6 +111,11 @@ a crash-looping watchdog everywhere. A command still running at
 `--no-start` installs the scripts + cron but doesn't launch the watchdog. Use
 it for staging. `--no-canary` skips the dry run. To run the canary on its own
 without submitting, see `yuj canary`.
+
+`--autotune` can gauge the capacity of each host's worker count from its free RAM,
+cores and VRAM, and drops hosts with no room. Per-worker
+costs come from `sizing:` in `yuj.yaml`. Requires `input_file`. See
+[autotuning workers per host](https://yuj.saketlab.org/concepts/#autotuning-workers-per-host).
 
 ## `yuj canary`
 
@@ -133,12 +138,13 @@ submit`.
 
 ```bash
 yuj run [--fleet PATH] [--hosts a,b,...] [--no-payload] [--no-start]
-        [--no-canary] [--canary-timeout SECONDS]
+        [--no-canary] [--canary-timeout SECONDS] [--autotune]
 ```
 
 `--no-payload` skips heavy data already on each host (the lightweight re-run
 path); `--no-start` installs the watchdog without launching it; `--no-canary`
-skips the pre-submit dry run.
+skips the pre-submit dry run; `--autotune` sizes each host's worker count from
+its free resources (see [`yuj submit`](#yuj-submit)).
 
 ## `yuj scatter`
 

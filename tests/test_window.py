@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import pytest
 
+from yuj.canary import canary_script
 from yuj.exceptions import YujError
 from yuj.fleet import Host
-from yuj.supervise import SuperviseConfig, render_watchdog
+from yuj.supervise import SuperviseConfig, render_run, render_watchdog
 from yuj.window import Window
 
 
@@ -111,3 +112,52 @@ class TestHostConfig:
     def test_invalid_host_window_rejected(self) -> None:
         with pytest.raises(YujError):
             Host(name="h", ip="1.1.1.1", user="u", window="nope")
+
+    def test_autotuned_concurrency_overrides_job_default(self) -> None:
+        host = Host(name="h", ip="1.1.1.1", user="u", concurrency=12)
+        cfg = self._cfg().for_host(host)
+        assert cfg.concurrency == 12
+        assert cfg.active_window == "19:00-09:30"  # window untouched
+
+    def test_no_host_concurrency_keeps_job_default(self) -> None:
+        host = Host(name="h", ip="1.1.1.1", user="u")
+        assert self._cfg().for_host(host).concurrency == 1
+
+    def test_sized_placement_is_exported_to_the_run_script(self) -> None:
+        host = Host(
+            name="h",
+            ip="1.1.1.1",
+            user="u",
+            concurrency=12,
+            gpus="0 1 2",
+            workers_per_gpu="4 4 4",
+        )
+        script = render_run(self._cfg().for_host(host))
+        assert 'export GPUS="0 1 2"' in script
+        assert 'export WORKERS_PER_GPU="4 4 4"' in script
+
+    def test_no_placement_exports_nothing(self) -> None:
+        host = Host(name="h", ip="1.1.1.1", user="u")
+        assert "GPUS" not in render_run(self._cfg().for_host(host))
+
+    def test_canary_exports_the_same_placement_as_the_run_script(self) -> None:
+        # A work command reading $GPUS must not die under `set -u` in the canary
+        # and then succeed for real, nor be validated against other cards.
+        host = Host(
+            name="h",
+            ip="1.1.1.1",
+            user="u",
+            concurrency=12,
+            gpus="0 1 2",
+            workers_per_gpu="4 4 4",
+        )
+        cfg = self._cfg().for_host(host)
+        assert 'export GPUS="0 1 2"' in canary_script(cfg, timeout_s=90)
+        assert "export GPUS" not in canary_script(self._cfg(), timeout_s=90)
+
+    def test_host_sized_to_zero_workers_is_refused_not_silently_run_as_one(
+        self,
+    ) -> None:
+        host = Host(name="h", ip="1.1.1.1", user="u", concurrency=0)
+        with pytest.raises(YujError):
+            self._cfg().for_host(host)

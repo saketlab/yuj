@@ -17,7 +17,7 @@ from rich.console import Console
 from rich.table import Table
 
 from yuj._html import status_html
-from yuj._render import status_table, summary_line
+from yuj._render import sizing_table, status_table, summary_line
 from yuj.canary import DEFAULT_TIMEOUT_S, run_canary
 from yuj.config import ProjectConfig
 from yuj.deploy import DeployPlan, deploy_fleet
@@ -26,6 +26,7 @@ from yuj.fleet import Fleet, load_from_csv, load_from_yaml
 from yuj.preflight import local_preflight
 from yuj.probe import probe_fleet
 from yuj.scatter import read_items
+from yuj.sizing import WorkerProfile, plan_workers
 from yuj.status import HostStatus
 from yuj.supervise import SuperviseConfig, submit_fleet
 from yuj.window import Window
@@ -132,6 +133,41 @@ def _supervise_config(config: ProjectConfig) -> SuperviseConfig:
         _die(str(exc))
 
 
+def _autotune(
+    fleet: Fleet, statuses: Sequence[HostStatus], config: ProjectConfig
+) -> Fleet:
+    """Size each host from its free resources; return a fleet carrying the counts.
+
+    Hosts with no headroom are dropped, not floored at one worker, so
+    :func:`plan_workers` stays the only place that decides. Dies if none survive.
+    """
+    try:
+        profile = WorkerProfile(**config.sizing)
+    except (TypeError, YujError) as exc:
+        _die(f"bad sizing section in yuj.yaml: {exc}")
+    users = {h.name: h.user for h in fleet.hosts}
+    plans = {
+        s.name: plan_workers(
+            s.gpus,
+            nproc=s.nproc or 1,
+            mem_avail_gb=s.mem_avail_gb or 0,
+            load1=s.load1 or 0.0,
+            me=users.get(s.name, ""),
+            profile=profile,
+        )
+        for s in statuses
+        if s.reachable
+    }
+    console.print(sizing_table(statuses, plans))
+    usable = {n: p for n, p in plans.items() if p.usable}
+    if not usable:
+        _die(
+            "no host has room for a worker right now. Sizing measures headroom, "
+            "so autotune a fleet that is idle, or submit without --autotune."
+        )
+    return fleet.select(list(usable)).with_sizing(usable)
+
+
 def _teardown_config(config: ProjectConfig) -> SuperviseConfig:
     """Build a SuperviseConfig for teardown (work_command/results_glob unused)."""
     return SuperviseConfig(
@@ -188,12 +224,18 @@ def _preflight_or_die(config: ProjectConfig, *, push_payload: bool) -> None:
         _die("pre-flight failed:\n  - " + "\n  - ".join(problems))
 
 
-def _print_canary(fleet: Fleet, cfg: SuperviseConfig, *, timeout_s: int) -> bool:
+def _print_canary(
+    fleet: Fleet,
+    cfg: SuperviseConfig,
+    *,
+    timeout_s: int,
+    statuses: Sequence[HostStatus] | None = None,
+) -> bool:
     """Dry-run the work command on one host, print the outcome, return ``ok``."""
     console.print(
         f"[dim]canary: dry-running work command on one host (≤{timeout_s}s)…[/dim]"
     )
-    result = run_canary(fleet, cfg, timeout_s=timeout_s)
+    result = run_canary(fleet, cfg, timeout_s=timeout_s, statuses=statuses)
     if result.ok:
         where = f" on {result.host}" if result.host else ""
         console.print(f"[green]✓ canary passed[/green]{where}: {result.detail}")
@@ -235,14 +277,30 @@ def _do_submit(
     timeout: float,
     canary: bool = True,
     canary_timeout: int = DEFAULT_TIMEOUT_S,
+    autotune: bool = False,
 ) -> None:
     """Install supervision on the fleet and print the outcome table.
 
     Unless ``canary`` is False, first does a single-host dry run of the work
     command, so a broken job aborts before the watchdog is installed fleet-wide.
+    With ``autotune``, each host's worker count is sized from its free resources
+    instead of the job-wide ``concurrency``.
     """
     cfg = _supervise_config(config)
-    if canary and not _print_canary(fleet, cfg, timeout_s=canary_timeout):
+    statuses = None
+    if autotune:
+        if not config.input_file:
+            _die(
+                "--autotune needs 'input_file' in yuj.yaml; batch jobs "
+                "self-parallelise."
+            )
+        statuses = probe_fleet(
+            fleet, results_glob=config.results_glob, job=config.job, timeout=timeout
+        )
+        fleet = _autotune(fleet, statuses, config)
+    if canary and not _print_canary(
+        fleet, cfg, timeout_s=canary_timeout, statuses=statuses
+    ):
         _die("aborting submit; fix the work command or pass --no-canary to skip.")
     results = submit_fleet(fleet, cfg, start=start, timeout=timeout)
     _print_op_table(

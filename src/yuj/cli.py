@@ -112,6 +112,14 @@ _NoCanaryOpt = Annotated[
 _CanaryTimeoutOpt = Annotated[
     int, typer.Option("--canary-timeout", help="Canary dry-run timeout (s).")
 ]
+_AutotuneOpt = Annotated[
+    bool,
+    typer.Option(
+        "--autotune",
+        help="Size each host's worker count from its free RAM/cores/VRAM "
+        "instead of the job-wide 'concurrency'.",
+    ),
+]
 _TotalOpt = Annotated[
     int | None,
     typer.Option(
@@ -347,6 +355,7 @@ def submit(
     ] = False,
     no_canary: _NoCanaryOpt = False,
     canary_timeout: _CanaryTimeoutOpt = DEFAULT_TIMEOUT_S,
+    autotune: _AutotuneOpt = False,
     timeout: Annotated[float, typer.Option(help="Per-host op timeout (s).")] = 120.0,
 ) -> None:
     """Install the self-healing watchdog + cron on every host.
@@ -363,6 +372,7 @@ def submit(
         timeout=timeout,
         canary=not no_canary,
         canary_timeout=canary_timeout,
+        autotune=autotune,
     )
 
 
@@ -844,9 +854,11 @@ def rescue(
         (
             r.host,
             r.rescued,
-            f"load {r.load_before}→{r.load_after} in {r.attempts} attempt(s)"
-            if r.rescued
-            else (r.error or "failed"),
+            (
+                f"load {r.load_before}→{r.load_after} in {r.attempts} attempt(s)"
+                if r.rescued
+                else (r.error or "failed")
+            ),
         )
         for r in results
     ]
@@ -1103,6 +1115,7 @@ def run(
     ] = False,
     no_canary: _NoCanaryOpt = False,
     canary_timeout: _CanaryTimeoutOpt = DEFAULT_TIMEOUT_S,
+    autotune: _AutotuneOpt = False,
     deploy_timeout: Annotated[
         float, typer.Option("--deploy-timeout", help="Per-host deploy timeout (s).")
     ] = 1800.0,
@@ -1125,6 +1138,7 @@ def run(
         timeout=timeout,
         canary=not no_canary,
         canary_timeout=canary_timeout,
+        autotune=autotune,
     )
 
 

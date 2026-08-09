@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import concurrent.futures
 import csv
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from yuj.exceptions import FleetError
 from yuj.window import Window
+
+if TYPE_CHECKING:  # sizing depends on status; keep the runtime import one-way
+    from yuj.sizing import SizingPlan
 
 
 @dataclass(frozen=True)
@@ -35,6 +38,10 @@ class Host:
     weight: float = 1.0
     do_not_use: bool = False
     window: str | None = None
+    # set by submit --autotune; unset means use the job-wide defaults
+    concurrency: int | None = None
+    gpus: str = ""
+    workers_per_gpu: str = ""
     local: bool = False
     strict_host_key: bool = False
     known_hosts_file: str | None = None
@@ -148,6 +155,25 @@ class Fleet:
         return Fleet(
             tuple(replace(h, weight=weights.get(h.name, h.weight)) for h in self.hosts)
         )
+
+    def with_sizing(self, plans: Mapping[str, SizingPlan]) -> Fleet:
+        """Return a copy carrying each host's sized worker count and placement."""
+        unknown = set(plans) - set(self.names)
+        if unknown:
+            raise FleetError(f"sizing given for unknown hosts: {sorted(unknown)}")
+
+        def sized(host: Host) -> Host:
+            plan = plans.get(host.name)
+            if plan is None:
+                return host
+            return replace(
+                host,
+                concurrency=plan.total_workers,
+                gpus=plan.gpus_env,
+                workers_per_gpu=plan.workers_per_gpu_env,
+            )
+
+        return Fleet(tuple(sized(h) for h in self.hosts))
 
 
 def load_from_csv(path: str | Path) -> Fleet:

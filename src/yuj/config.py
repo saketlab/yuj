@@ -33,10 +33,11 @@ def _section(data: Mapping[str, Any], key: str) -> dict[str, Any]:
 class ProjectConfig:
     """The settings in ``yuj.yaml``, with defaults applied once at parse time.
 
-    Scalar fields are the job-wide settings every command shares. The four
+    Scalar fields are the job-wide settings every command shares. The
     operation-specific sections (``deploy``/``scatter``/``authorize``/
-    ``bootstrap``) are kept as raw mappings, since each command parses its own
-    section into its own typed config (``DeployPlan``, ``BootstrapConfig``, …).
+    ``bootstrap``/``sizing``) are kept as raw mappings, since each command parses
+    its own section into its own typed config (``DeployPlan``, ``WorkerProfile``,
+    …).
     """
 
     fleet: str | None = None
@@ -55,6 +56,7 @@ class ProjectConfig:
     scatter: Mapping[str, Any] = field(default_factory=dict)
     authorize: Mapping[str, Any] = field(default_factory=dict)
     bootstrap: Mapping[str, Any] = field(default_factory=dict)
+    sizing: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def input_source(self) -> str | None:
@@ -81,4 +83,5 @@ class ProjectConfig:
             scatter=_section(data, "scatter"),
             authorize=_section(data, "authorize"),
             bootstrap=_section(data, "bootstrap"),
+            sizing=_section(data, "sizing"),
         )

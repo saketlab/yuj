@@ -70,6 +70,8 @@ class SuperviseConfig:
     active_window: str | None = None
     off_window_command: str | None = None
     concurrency: int = 1
+    gpus: str = ""
+    workers_per_gpu: str = ""
 
     def __post_init__(self) -> None:
         if not _JOB_RE.match(self.job):
@@ -79,6 +81,8 @@ class SuperviseConfig:
             )
         if self.input_file and not self.output_dir:
             raise YujError("output_dir is required when input_file is set")
+        if self.concurrency < 1:
+            raise YujError(f"concurrency must be >= 1, got {self.concurrency}")
         validate_remote_path(self.remote_dir, label="remote_dir")
         validate_remote_glob(self.results_glob)
         if self.input_file:
@@ -94,14 +98,18 @@ class SuperviseConfig:
         return Window.parse(self.active_window) if self.active_window else None
 
     def for_host(self, host: Host) -> SuperviseConfig:
-        """Return this config specialised for ``host``.
-
-        A per-host ``window`` (the fleet.csv column) overrides the job-level
-        ``active_window``.
-        """
-        if host.window is None:
-            return self
-        return replace(self, active_window=host.window or None)
+        """Return this config specialised for ``host``: window, then sizing."""
+        window = self.active_window if host.window is None else (host.window or None)
+        # is None, not falsiness: a host sized to 0 workers means 0
+        if host.concurrency is None:
+            return replace(self, active_window=window)
+        return replace(
+            self,
+            active_window=window,
+            concurrency=host.concurrency,
+            gpus=host.gpus,
+            workers_per_gpu=host.workers_per_gpu,
+        )
 
     @property
     def run_script(self) -> str:
@@ -158,6 +166,8 @@ def _context(cfg: SuperviseConfig) -> dict[str, object]:
         "grace_sec": cfg.grace_sec,
         "cron_minutes": cfg.cron_minutes,
         "concurrency": cfg.concurrency,
+        "gpus": cfg.gpus,
+        "workers_per_gpu": cfg.workers_per_gpu,
         "run_script": cfg.run_script,
         "watchdog_script": cfg.watchdog_script,
         "ensure_script": cfg.ensure_script,
@@ -243,8 +253,7 @@ def submit_fleet(
 ) -> dict[str, SubmitResult]:
     """Submit ``cfg`` to every host in parallel; tolerant of individual failures.
 
-    Each host is supervised with its own :meth:`SuperviseConfig.for_host`, so a
-    per-host ``window`` time-boxes that host while others stay always-on.
+    Each host gets its own :meth:`SuperviseConfig.for_host`.
     """
     return map_fleet(
         fleet,

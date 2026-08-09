@@ -8,6 +8,10 @@ cd "$HOME/{{ remote_dir }}" || exit 1
 # Source the environment `yuj bootstrap` wrote (env manager + extras), if present.
 # shellcheck disable=SC1091
 [ -f env.sh ] && . ./env.sh
+{% if gpus %}
+export GPUS="{{ gpus }}"
+export WORKERS_PER_GPU="{{ workers_per_gpu }}"
+{% endif %}
 {% if input_file %}
 INPUT="{{ input_file }}"
 OUTDIR="{{ output_dir }}"

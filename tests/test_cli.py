@@ -15,7 +15,7 @@ from yuj.cli import app
 from yuj.decommission import DecommissionResult
 from yuj.deploy import DeployResult
 from yuj.provision import ProvisionResult
-from yuj.status import Diagnosis, HostStatus
+from yuj.status import Diagnosis, Gpu, HostStatus
 from yuj.supervise import SubmitResult
 
 runner = CliRunner()
@@ -255,6 +255,124 @@ class TestSubmit:
         result = runner.invoke(app, ["submit", "--no-canary"])
         assert result.exit_code == 0
         assert "watchdog=True" in result.stdout
+
+    def test_autotune_sizes_each_host_from_free_resources(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._config(tmp_path)
+        (tmp_path / "yuj.yaml").write_text(
+            (tmp_path / "yuj.yaml").read_text()
+            + "concurrency: 1\ninput_file: items.txt\noutput_dir: out\n"
+            + "sizing:\n  ram_gb: 7.0\n  vram_mb: 6000\n  cores: 8\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        # a: 3 idle A6000s + 96 cores -> cores bind at 12. b: no GPU -> 1.
+        cards = tuple(Gpu(i, "A6000", 49_140, 0) for i in range(3))
+        monkeypatch.setattr(
+            cli_support_module,
+            "probe_fleet",
+            lambda fleet, **kw: [
+                HostStatus(
+                    name=h.name,
+                    ip=h.ip,
+                    reachable=True,
+                    nproc=96,
+                    mem_avail_gb=880,
+                    load1=0.0,
+                    gpus=cards if h.name == "a" else (),
+                )
+                for h in fleet
+            ],
+        )
+        seen: dict[str, int | None] = {}
+
+        def fake_submit(fleet, cfg, **kw):  # type: ignore[no-untyped-def]
+            seen.update({h.name: h.concurrency for h in fleet})
+            return {h.name: SubmitResult(host=h.name, ok=True) for h in fleet}
+
+        monkeypatch.setattr(cli_support_module, "submit_fleet", fake_submit)
+        result = runner.invoke(app, ["submit", "--no-canary", "--autotune"])
+        assert result.exit_code == 0
+        assert seen == {"a": 12, "b": 1}
+        assert "autotune" in result.stdout
+
+    def test_autotune_drops_a_host_with_no_headroom(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._config(tmp_path)
+        (tmp_path / "yuj.yaml").write_text(
+            (tmp_path / "yuj.yaml").read_text() + "input_file: items.txt\n"
+            "output_dir: out\nsizing:\n  cores: 8\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        # Host b is swamped (load 900 on 96 cores): no room, so it is skipped.
+        monkeypatch.setattr(
+            cli_support_module,
+            "probe_fleet",
+            lambda fleet, **kw: [
+                HostStatus(
+                    name=h.name,
+                    ip=h.ip,
+                    reachable=True,
+                    nproc=96,
+                    mem_avail_gb=880,
+                    load1=0.0 if h.name == "a" else 900.0,
+                )
+                for h in fleet
+            ],
+        )
+        submitted: list[str] = []
+
+        def fake_submit(fleet, cfg, **kw):  # type: ignore[no-untyped-def]
+            submitted.extend(h.name for h in fleet)
+            return {h.name: SubmitResult(host=h.name, ok=True) for h in fleet}
+
+        monkeypatch.setattr(cli_support_module, "submit_fleet", fake_submit)
+        result = runner.invoke(app, ["submit", "--no-canary", "--autotune"])
+        assert result.exit_code == 0
+        assert submitted == ["a"]
+        assert "skipped" in result.stdout
+
+    def test_autotune_dies_when_no_host_has_room(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._config(tmp_path)
+        (tmp_path / "yuj.yaml").write_text(
+            (tmp_path / "yuj.yaml").read_text()
+            + "input_file: items.txt\noutput_dir: out\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            cli_support_module,
+            "probe_fleet",
+            lambda fleet, **kw: [
+                HostStatus(
+                    name=h.name,
+                    ip=h.ip,
+                    reachable=True,
+                    nproc=1,
+                    mem_avail_gb=1,
+                    load1=0.0,
+                )
+                for h in fleet
+            ],
+        )
+        result = runner.invoke(app, ["submit", "--no-canary", "--autotune"])
+        assert result.exit_code == 1
+        assert "no host has room" in result.output
+
+    def test_autotune_rejects_an_unknown_sizing_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._config(tmp_path)
+        (tmp_path / "yuj.yaml").write_text(
+            (tmp_path / "yuj.yaml").read_text()
+            + "input_file: items.txt\noutput_dir: out\nsizing:\n  ram_bg: 7.0\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["submit", "--no-canary", "--autotune"])
+        assert result.exit_code == 1
+        assert "ram_bg" in result.output
 
     def test_submit_requires_work_command(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

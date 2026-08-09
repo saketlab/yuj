@@ -10,7 +10,7 @@ from yuj import probe as probe_module
 from yuj._shell import CommandResult
 from yuj.exceptions import AuthError, YujError
 from yuj.fleet import Fleet, Host
-from yuj.probe import parse_status, probe_fleet, probe_host
+from yuj.probe import parse_gpus, parse_status, probe_fleet, probe_host
 from yuj.status import HostStatus
 from yuj.transport import SSHTransport
 
@@ -24,13 +24,65 @@ BLOCK = (
     "nproc=8\n"
     "mem=31\n"
     "cpu=Intel(R) Xeon(R) Gold 6248 CPU @ 2.50GHz\n"
-    "gpu=NVIDIA A40, 46068 MiB\n"
     "outputs=42\n"
     "age=3\n"
     "wd=1\n"
     "console=\n"
     "YUJEND\n"
+    "gpu:0, NVIDIA A40, 46068, 0, GPU-aaa\n"
 )
+
+
+class TestParseGpus:
+    def test_reads_cards_and_owners(self) -> None:
+        gpus = parse_gpus(
+            "gpu:0, NVIDIA A6000, 49140, 22330, GPU-aaa\n"
+            "gpu:1, NVIDIA A6000, 49140, 7170, GPU-bbb\n"
+            "gpuproc:GPU-bbb, 101\n"
+            "gpuproc:GPU-bbb, 102\n"
+            "pid:  101 bgoswami /opt/ollama runner --model x\n"
+            "pid:  102 bgoswami /opt/ollama runner --model y\n"
+        )
+        assert len(gpus) == 2
+        assert gpus[0].free_mb == 26_810
+        assert gpus[1].users == ("bgoswami",)  # duplicate pids collapse to one user
+        assert gpus[1].shared_with_others("me")
+        assert not gpus[0].shared_with_others("me")
+
+    def test_own_stale_run_is_foreign_when_a_marker_is_given(self) -> None:
+        # Same Unix user, different launch: yuj must not stack on its leftovers.
+        gpus = parse_gpus(
+            "gpu:0, A6000, 49140, 22000, GPU-aaa\n"
+            "gpu:1, A6000, 49140, 22000, GPU-bbb\n"
+            "gpuproc:GPU-aaa, 101\n"
+            "gpuproc:GPU-bbb, 102\n"
+            "pid:  101 me ollama runner --old\n"
+            "pid:  102 me ollama runner --job=abc\n"
+        )
+        assert gpus[0].shared_with_others("me", own_marker="--job=abc")
+        assert not gpus[1].shared_with_others("me", own_marker="--job=abc")
+
+    def test_card_name_containing_a_comma_still_parses(self) -> None:
+        gpus = parse_gpus("gpu:0, NVIDIA RTX A6000, Gen4, 49140, 22330, GPU-aaa\n")
+        assert len(gpus) == 1
+        assert gpus[0].name == "NVIDIA RTX A6000, Gen4"
+        assert gpus[0].mem_total_mb == 49_140
+        assert gpus[0].free_mb == 26_810
+
+    def test_unattributable_process_makes_every_card_shared(self) -> None:
+        # MIG reports MIG-… device uuids that match no parent card. We cannot
+        # tell which card is busy, so no card may be claimed as free.
+        gpus = parse_gpus(
+            "gpu:0, A100, 40960, 20000, GPU-aaa\n"
+            "gpu:1, A100, 40960, 0, GPU-bbb\n"
+            "gpuproc:MIG-deadbeef, 101\n"
+            "pid:  101 someone /opt/train.py\n"
+        )
+        assert all(g.shared_with_others("me") for g in gpus)
+
+    def test_tolerates_junk(self) -> None:
+        assert parse_gpus("nvidia-smi: command not found") == ()
+        assert parse_gpus("gpu:not,a,card\ngpuproc:x,y\n") == ()
 
 
 class TestParseStatus:
@@ -67,13 +119,13 @@ class TestParseStatus:
         assert s.newest_age_min is None
         assert s.watchdog_running is False
 
-    def test_empty_cpu_and_gpu_are_none(self) -> None:
-        s = parse_status("YUJSTATUS\ncpu=\ngpu=\nYUJEND\n", HOST)
+    def test_empty_cpu_and_no_card_are_none(self) -> None:
+        s = parse_status("YUJSTATUS\ncpu=\nYUJEND\n", HOST)
         assert s.cpu_model is None
         assert s.gpu is None
 
     def test_gpu_without_memory_keeps_name(self) -> None:
-        s = parse_status("YUJSTATUS\ngpu=NVIDIA A100\nYUJEND\n", HOST)
+        s = parse_status("YUJSTATUS\nYUJEND\ngpu:0, NVIDIA A100, 0, 0, GPU-a\n", HOST)
         assert s.gpu == "A100"
 
     def test_lines_before_block_ignored(self) -> None:

@@ -84,6 +84,43 @@ When the static `weight` column doesn't reflect reality, `yuj scatter --by
 download speed) and splits by that instead. `yuj fleet bench` shows the same
 ranking without scattering.
 
+## Autotuning workers per host
+
+Autotuning sets how many `scatter` split jobs a host can run at once. This is useful
+for example running multiple workers of a process (say ollama) to maximise the utilisation
+of GPU rather than processing the tasks serially.
+
+```yaml
+# yuj.yaml
+concurrency: 4     # used when --autotune is off
+sizing:
+  ram_gb: 7.0      # peak RSS per worker
+  vram_mb: 6000    # resident VRAM per worker
+  cores: 8         # threads a worker uses
+```
+
+```bash
+yuj submit --autotune
+```
+
+```text
+┃ host         ┃ workers ┃ limited by ┃ gpus  ┃
+│ gpubox1      │      12 │ cores      │ 0 1 2 │
+│ gpubox2      │      11 │ ram        │ 0 1 2 │
+│ old-box      │ skipped │ gpus-busy  │ -     │
+```
+
+The lowest celing is decided by:
+
+```
+by_ram   = mem_available × 0.8 / ram_gb      (0.8: peak sits above steady state)
+by_cores = (cores − load1) / cores           (live load counts against you)
+by_vram  = Σ cards: min(max_per_gpu, (free_mb − gpu_reserve_mb) / vram_mb)
+```
+Other `sizing:` keys: `max_per_gpu` (8), `gpu_reserve_mb` (1000), `require_gpu`
+(false), `own_marker` (treat your own stale runs as foreign).
+The freest machine is assigned the workers first.
+
 ## do_not_use
 
 Mark decommissioned or off-limits hosts with `do_not_use: true`:
@@ -122,9 +159,9 @@ alice,10.0.0.2,server,p,                # blank = always on
 your worker leaves behind (a model server, a scratch process) before handing the
 machine back.
 
-## Local host (the controller as a worker)
+## Local host
 
-The machine you launch from is often a capable worker too. Mark it `local` and
+The machine yuj is lancued from is often a capable worker too. You can mark it `local` and
 yuj runs work on it **directly, through a local shell with no SSH**:
 
 ```csv
@@ -154,7 +191,7 @@ It connects as the admin, and via `sudo`:
 3. locks the account's password, so only the key works.
 
 One ed25519 keypair is generated on the controller for the whole fleet; the
-private half stays under `.yuj/keys/` (gitignored) and a `provisioned-fleet.csv`
+private key stays under `.yuj/keys/` (gitignored) and a `provisioned-fleet.csv`
 points each host's `key_path` at it. The admin's sudo password rides SSH stdin
 (`sudo -S`), never a command line. Because the new account is key-only, it never
 trips fail2ban, the same reason the rest of yuj prefers keys.
