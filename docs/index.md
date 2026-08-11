@@ -95,6 +95,7 @@ r-users
 :hidden:
 
 cli
+config
 concepts
 caveats
 ```

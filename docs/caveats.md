@@ -44,7 +44,7 @@ The default `stall_min: 90` (90 minutes) suits long-running jobs that load big m
 stall_min: 5   # restart if no new output for 5 minutes
 ```
 
-But make sure `grace_sec` is long enough to cover your startup time (default 2700 s = 45 min). Without sufficient grace, the watchdog will restart a warming-up job.
+The watchdog also ignores stalls for 45 minutes after each (re)launch, so a job that loads a large model on startup won't be killed while warming up. A `stall_min` shorter than your startup time is therefore safe, but one shorter than the gap between two normal outputs will restart a healthy job.
 
 ## yuj is not a scheduler
 

@@ -53,6 +53,62 @@ pause_work() {
 {% endif %}
 }
 {% endif %}
+{% if courtesy %}
+# Courtesy: share the GPUs. A card carrying anyone else's compute is theirs,
+# however little memory they hold. Mirrors yuj.sizing.courteous_gpus; keep the
+# two in step.
+GPU_FILE="{{ gpu_file }}"
+TOTAL_WORKERS={{ concurrency }}
+ME=$(id -un)
+HAVE_SMI=0
+command -v nvidia-smi >/dev/null 2>&1 && HAVE_SMI=1
+ALLOWED=""
+
+# Prints the space-separated indices of cards with no foreign process.
+# One awk pass over (index,uuid) then (uuid,owner) keeps it portable: no bash-4
+# associative arrays, so this still works on macOS bash 3.2.
+gpu_courtesy_list() {
+    {
+        nvidia-smi --query-gpu=index,uuid --format=csv,noheader 2>/dev/null \
+            | tr -d ' ' | sed 's/^/G,/'
+        nvidia-smi --query-compute-apps=gpu_uuid,pid --format=csv,noheader 2>/dev/null \
+            | tr -d ' ' | while IFS=, read -r uuid pid; do
+                [ -z "$pid" ] && continue
+                echo "P,${uuid},$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ')"
+            done
+    } | awk -F, -v me="$ME" '
+        $1=="G" { idx[$3]=$2; order[++n]=$3 }
+        $1=="P" && $3!="" && $3!=me { busy[$2]=1 }
+        END { for (i=1;i<=n;i++) if (!(order[i] in busy)) printf "%s ", idx[order[i]] }'
+}
+
+# Sets ALLOWED and writes GPUS/WORKERS_PER_GPU for the run script to source.
+# Returns 0 when the allowed set changed since the last tick.
+refresh_courtesy() {
+    local list prev="$ALLOWED"
+    if [ "$HAVE_SMI" -eq 0 ]; then
+        rm -f "$GPU_FILE"
+        return 1
+    fi
+    list=$(gpu_courtesy_list | sed 's/[[:space:]]*$//')
+    # More idle cards than workers: take the first TOTAL_WORKERS of them, so no
+    # card is sized to zero and the two lists stay the same length.
+    list=$(echo "$list" | awk -v t="$TOTAL_WORKERS" \
+        '{ n = (NF > t ? t : NF); for (i = 1; i <= n; i++) printf "%s%s", (i > 1 ? " " : ""), $i }')
+    ALLOWED="$list"
+    {
+        echo "GPUS=\"$list\""
+        echo "WORKERS_PER_GPU=\"$(awk -v t="$TOTAL_WORKERS" -v l="$list" 'BEGIN {
+            n = split(l, a, " "); if (!n) exit
+            b = int(t / n); e = t % n
+            for (i = 0; i < n; i++) printf "%s%d", (i ? " " : ""), b + (i < e) }')\""
+    } >"$GPU_FILE"
+    [ "$list" != "$prev" ]
+}
+
+# A host with no nvidia-smi has nothing to share, so it runs unrestricted.
+have_gpu() { [ "$HAVE_SMI" -eq 0 ] || [ -n "$ALLOWED" ]; }
+{% endif %}
 
 # Count processes matching a pattern. Bracket the first char so the grep does
 # not match its own argv.
@@ -84,20 +140,30 @@ relaunch() {
     fi
 }
 
+{% if courtesy %}
+start_work() { if have_gpu; then relaunch; else log "courtesy: every card busy; waiting"; fi; }
+{% else %}
+start_work() { relaunch; }
+{% endif %}
+
 # Single-instance guard: kill any other watchdog for this job, keep self.
 for p in $(ps -eo pid,args 2>/dev/null | awk -v j="$JOB" '/yuj-watchdog/ && $0 ~ j {print $1}'); do
     [ "$p" != "$$" ] && kill "$p" 2>/dev/null
 done
 
 last_action=$(date +%s)
+{% if courtesy %}
+refresh_courtesy
+log "courtesy: cards allowed = [$ALLOWED]"
+{% endif %}
 {% if has_window %}
 if within_window; then
-    relaunch
+    start_work
 else
     log "outside active window {{ window_label }}; not starting yet"
 fi
 {% else %}
-relaunch
+start_work
 {% endif %}
 while [ ! -f "$STOP" ]; do
     sleep "$INTERVAL"
@@ -107,6 +173,27 @@ while [ ! -f "$STOP" ]; do
         if [ "$(count "[b]ash $RUN")" -gt 0 ]; then
             log "ACTION: outside active window {{ window_label }} -> pause work"
             pause_work
+        fi
+        continue
+    fi
+{% endif %}
+{% if courtesy %}
+    # Re-read the cards ahead of the stall logic so an owner returning to a GPU
+    # gets it back on this tick.
+    if refresh_courtesy && have_gpu; then
+        log "ACTION: courtesy -> cards changed to [$ALLOWED]; relaunch"
+        relaunch
+        last_action=$(date +%s)
+        continue
+    fi
+    # Checked every tick, not just on a change: a watchdog restarted by cron
+    # starts with no record of the previous set and must still yield.
+    if ! have_gpu; then
+        if [ "$(count "[b]ash $RUN")" -gt 0 ]; then
+            log "ACTION: courtesy -> every card busy; pausing"
+            stop_run
+        else
+            log "courtesy: every card busy; waiting"
         fi
         continue
     fi

@@ -1,7 +1,8 @@
 # CLI reference
 
 All commands read settings from `yuj.yaml` in the current directory; flags
-override. Run any command with `--help` for the full option list.
+override. Run any command with `--help` for the full option list. Every setting
+is listed in the [configuration reference](config.md).
 
 ## `yuj init`
 
@@ -79,6 +80,11 @@ installing nothing. `--force` re-runs on a host that already has the marker
 bootstrap. Keep `--max-workers` low (default 4) so parallel SSH logins
 don't trip fail2ban.
 
+```bash
+yuj bootstrap --check                            # what would be installed
+yuj bootstrap --env-manager micromamba --extras R,RCLONE
+```
+
 ## `yuj deploy`
 
 Rsync code + payload to every host.
@@ -93,13 +99,18 @@ the code, the lightweight redistribution path for re-runs.
 Aborts before sending anything if a `deploy.code` or `deploy.payload` path in
 `yuj.yaml` doesn't exist locally.
 
+```bash
+yuj deploy                        # code + payload
+yuj deploy --no-payload           # code only, for a quick re-push
+```
+
 ## `yuj submit`
 
 Install the self-healing watchdog + cron on every host and start the job.
 
 ```bash
 yuj submit [--fleet PATH] [--hosts a,b,...] [--no-start]
-           [--no-canary] [--canary-timeout SECONDS] [--autotune]
+           [--no-canary] [--canary-timeout SECONDS] [--autotune] [--courtesy]
 ```
 
 Before installing fleet-wide, a **canary** runs the work command once on one
@@ -112,10 +123,22 @@ a crash-looping watchdog everywhere. A command still running at
 it for staging. `--no-canary` skips the dry run. To run the canary on its own
 without submitting, see `yuj canary`.
 
-`--autotune` can gauge the capacity of each host's worker count from its free RAM,
-cores and VRAM, and drops hosts with no room. Per-worker
-costs come from `sizing:` in `yuj.yaml`. Requires `input_file`. See
-[autotuning workers per host](https://yuj.saketlab.org/concepts/#autotuning-workers-per-host).
+`--autotune` sizes each host's worker count from its free RAM, cores and VRAM,
+and drops hosts with no room. Per-worker costs come from `sizing:` in
+`yuj.yaml`; `input_file` must be set. See [autotuning workers per
+host](concepts.md#autotuning-workers-per-host).
+
+`--courtesy` runs only on GPUs nobody else is using, re-checked every watchdog
+tick, so an owner reclaiming a card gets it straight back. It also reads
+`courtesy: true` from `yuj.yaml`. See
+[courtesy](concepts.md#courtesy-sharing-the-gpus).
+
+```bash
+yuj submit                        # canary, then install fleet-wide
+yuj submit --autotune             # size each host's worker count first
+yuj submit --autotune --courtesy  # size to what is free, and keep yielding cards
+yuj submit --hosts gpu-01,gpu-02 --no-start   # stage without launching
+```
 
 ## `yuj canary`
 
@@ -138,13 +161,14 @@ submit`.
 
 ```bash
 yuj run [--fleet PATH] [--hosts a,b,...] [--no-payload] [--no-start]
-        [--no-canary] [--canary-timeout SECONDS] [--autotune]
+        [--no-canary] [--canary-timeout SECONDS] [--autotune] [--courtesy]
 ```
 
 `--no-payload` skips heavy data already on each host (the lightweight re-run
 path); `--no-start` installs the watchdog without launching it; `--no-canary`
 skips the pre-submit dry run; `--autotune` sizes each host's worker count from
-its free resources (see [`yuj submit`](#yuj-submit)).
+its free resources and `--courtesy` restricts it to idle GPUs (see
+[`yuj submit`](#yuj-submit)).
 
 ## `yuj scatter`
 
@@ -382,6 +406,11 @@ This kicks any in-progress work, so use it only when the remaining tail is cheap
 to redo. Otherwise let the running loops finish their current item and read the
 new slice on the next pass.
 
+```bash
+yuj rebalance                                   # one tick
+yuj rebalance --watch 600 --by download         # every 10 min until the batch is done
+```
+
 ## `yuj diagnose`
 
 Classify why hosts are (un)reachable.
@@ -416,10 +445,15 @@ leaves the cron in place, and `--pattern` narrows the kill to named processes.
 `--attempts`/`--interval`/`--connect-timeout` tune how hard it retries the flaky
 `sshd` window.
 
+```bash
+yuj rescue                                  # every host diagnose says is unhealthy
+yuj rescue --hosts gpu-01 --pattern ollama  # kill only the named processes
+```
+
 ## `yuj storage`
 
-Show disk headroom on each host.Use it before `deploy` to
-spot hosts with a full `/` or no room for outputs.
+Show disk headroom on each host. Run it before `deploy` to spot hosts with a
+full `/` or no room for outputs.
 
 ```bash
 yuj storage [--fleet PATH] [--hosts a,b,...] [--work-dir PATH]
@@ -428,8 +462,8 @@ yuj storage [--fleet PATH] [--hosts a,b,...] [--work-dir PATH]
 The green header line per host reports free space at the work directory
 (`remote_dir` from `yuj.yaml` by default).
 
-A `★` in the **work** column marks the partition that directory lives on,
-so you can see the disk your outputs land.
+A `★` in the **work** column marks the partition that directory lives on, so
+you can see which disk your outputs land on.
 
 Pass `--work-dir ~` if you haven't deployed yet. `df` can't measure a
 `remote_dir` that doesn't exist, so it shows `? free at ... (path missing?)`.
@@ -453,6 +487,11 @@ yuj exec "COMMAND" [--fleet PATH] [--hosts a,b,...] [--include-down] [--timeout 
 Runs in each host's default shell (the command should be in quotes). Targets usable hosts;
 `--include-down` also includes hosts flagged `do_not_use`. `--raw` prints each
 host's full stdout/stderr instead of a one-line-per-host table.
+
+```bash
+yuj exec "nvidia-smi --query-gpu=name,memory.free --format=csv,noheader"
+yuj exec "df -h ~" --raw
+```
 
 ## `yuj decommission`
 
@@ -478,6 +517,14 @@ ran it.
 Decommission removes **only yuj's** cron entry and processes, identified by
 the job name. Any production job running on the same host is untouched.
 :::
+
+## `yuj version`
+
+Print the installed version.
+
+```bash
+yuj version
+```
 
 ## Global options
 

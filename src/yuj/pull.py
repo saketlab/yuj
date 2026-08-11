@@ -88,11 +88,11 @@ def _pull_host(
     connect_timeout: int,
     timeout: float,
 ) -> PullResult:
-    """Pull from a single host, returning a result rather than raising."""
+    """Pull from a single host, returning a :class:`PullResult` (never raising)."""
     dest = dest_root / host.name if per_host_subdir else dest_root
     dest.mkdir(parents=True, exist_ok=True)
     transport = make_transport(host, connect_timeout=connect_timeout)
-    # Trailing slash on the source: pull the directory's *contents*, not the dir.
+    # Trailing slash makes rsync copy the directory's contents into dest.
     source = remote_dir.rstrip("/") + "/"
     try:
         result = transport.get(

@@ -11,9 +11,22 @@ from yuj.status import Gpu
 RAM_SAFETY = 0.8
 
 
+def courteous_gpus(
+    gpus: tuple[Gpu, ...] | list[Gpu], me: str, own_marker: str = ""
+) -> tuple[int, ...]:
+    """Indices of the cards nobody else is computing on.
+
+    Mirrored by ``gpu_courtesy_list`` in ``templates/watchdog.sh.j2``, which the
+    watchdog re-runs every tick on the host; keep the two in step. The shell
+    side compares users only: ``own_marker`` is a ``sizing:`` key, so it reaches
+    ``--autotune`` on the controller but not the watchdog.
+    """
+    return tuple(g.index for g in gpus if not g.shared_with_others(me, own_marker))
+
+
 @dataclass(frozen=True)
 class WorkerProfile:
-    """What one worker costs. Measure once per job; defaults suit a local ollama."""
+    """Per worker cost. Measure once per job; defaults suit a local ollama."""
 
     ram_gb: float = 7.0
     vram_mb: int = 6_000
@@ -21,8 +34,6 @@ class WorkerProfile:
     max_per_gpu: int = 8
     gpu_reserve_mb: int = 1_000
     require_gpu: bool = False
-    # substring of our worker's GPU command line; non-matching own processes
-    # count as foreign, catching a stale previous launch
     own_marker: str = ""
 
     def __post_init__(self) -> None:
@@ -75,21 +86,18 @@ def plan_workers(
 ) -> SizingPlan:
     """Workers a host can take, from free RAM, cores and VRAM; tightest cap wins.
 
-    Measures headroom, not capacity: probing a busy host answers "how many more
-    fit". ``total_workers == 0`` means do not run here; there is no floor of one.
-    Cards running work that is not ours are never placed on.
+    Measures headroom, so probing a busy host answers "how many more fit".
+    ``total_workers == 0`` means do not run here; there is no floor of one.
     """
     prof = profile or WorkerProfile()
-    usable = [g for g in gpus if not g.shared_with_others(me, prof.own_marker)]
-    mine = {g.index for g in usable}
+    mine = set(courteous_gpus(gpus, me, prof.own_marker))
+    usable = [g for g in gpus if g.index in mine]
     skipped = tuple(g.index for g in gpus if g.index not in mine)
 
     by_ram = int(mem_avail_gb * RAM_SAFETY / prof.ram_gb)
-    # live load counts against the budget; a box at nproc has no room
     by_cores = int(max(0.0, nproc - max(0.0, load1)) // prof.cores)
 
     if not usable:
-        # all cards busy is not the same as no cards
         if gpus:
             return SizingPlan((), (), skipped, "gpus-busy")
         if prof.require_gpu:

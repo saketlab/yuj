@@ -23,6 +23,13 @@ def _opt_str(value: Any) -> str | None:
     return str(value) if value else None
 
 
+def _flag(value: Any) -> bool:
+    """Coerce a YAML scalar to bool; ``"false"``/``"no"``/``"0"`` stay False."""
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "y"}
+    return bool(value)
+
+
 def _section(data: Mapping[str, Any], key: str) -> dict[str, Any]:
     """Return ``data[key]`` as a plain dict, or ``{}`` if missing/not a mapping."""
     value = data.get(key)
@@ -52,6 +59,7 @@ class ProjectConfig:
     active_window: str | None = None
     off_window_command: str | None = None
     concurrency: int = 1
+    courtesy: bool = False
     deploy: Mapping[str, Any] = field(default_factory=dict)
     scatter: Mapping[str, Any] = field(default_factory=dict)
     authorize: Mapping[str, Any] = field(default_factory=dict)
@@ -79,6 +87,7 @@ class ProjectConfig:
             active_window=_opt_str(data.get("active_window")),
             off_window_command=_opt_str(data.get("off_window_command")),
             concurrency=int(data.get("concurrency", 1)),
+            courtesy=_flag(data.get("courtesy")),
             deploy=_section(data, "deploy"),
             scatter=_section(data, "scatter"),
             authorize=_section(data, "authorize"),

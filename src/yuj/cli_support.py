@@ -111,7 +111,9 @@ def _deploy_plan(config: ProjectConfig) -> DeployPlan:
     )
 
 
-def _supervise_config(config: ProjectConfig) -> SuperviseConfig:
+def _supervise_config(
+    config: ProjectConfig, *, courtesy: bool = False
+) -> SuperviseConfig:
     """Build a :class:`SuperviseConfig` from ``yuj.yaml`` (work_command required)."""
     if not config.work_command:
         _die("'work_command' is required in yuj.yaml for `yuj submit`.")
@@ -128,6 +130,7 @@ def _supervise_config(config: ProjectConfig) -> SuperviseConfig:
             active_window=config.active_window,
             off_window_command=config.off_window_command,
             concurrency=config.concurrency,
+            courtesy=config.courtesy or courtesy,
         )
     except YujError as exc:
         _die(str(exc))
@@ -278,6 +281,7 @@ def _do_submit(
     canary: bool = True,
     canary_timeout: int = DEFAULT_TIMEOUT_S,
     autotune: bool = False,
+    courtesy: bool = False,
 ) -> None:
     """Install supervision on the fleet and print the outcome table.
 
@@ -286,7 +290,7 @@ def _do_submit(
     With ``autotune``, each host's worker count is sized from its free resources
     instead of the job-wide ``concurrency``.
     """
-    cfg = _supervise_config(config)
+    cfg = _supervise_config(config, courtesy=courtesy)
     statuses = None
     if autotune:
         if not config.input_file:

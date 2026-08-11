@@ -203,8 +203,11 @@ def load_from_csv(path: str | Path) -> Fleet:
                 hint="need a user (username/user), address (ip/host), and name column",
             )
         for lineno, row in enumerate(reader, start=2):
-            clean = {(k or "").strip(): (v or "").strip() for k, v in row.items()}
-            name = clean.get(name_col, "")
+            clean = {
+                (k or "").strip(): (None if v is None else v.strip())
+                for k, v in row.items()
+            }
+            name = clean.get(name_col) or ""
             if not name:
                 continue
             hosts.append(
@@ -304,7 +307,7 @@ def map_fleet[T](
 
 
 def _row_to_host(
-    row: dict[str, str],
+    row: dict[str, str | None],
     user_col: str,
     addr_col: str,
     name_col: str,
@@ -313,20 +316,21 @@ def _row_to_host(
 ) -> Host:
     """Convert one cleaned CSV row into a :class:`Host`."""
     try:
-        weight = float(row["weight"]) if row.get("weight") else 1.0
-        port = int(row["port"]) if row.get("port") else 22
+        weight = float(row.get("weight") or 1.0)
+        port = int(row.get("port") or 22)
     except ValueError as exc:
         raise FleetError(f"{path}:{lineno}: bad numeric value ({exc})") from exc
     return Host(
-        name=row[name_col],
-        ip=row[addr_col],
-        user=row[user_col],
+        name=row[name_col] or "",
+        ip=row[addr_col] or "",
+        user=row[user_col] or "",
         port=port,
         password=row.get("password") or None,
         key_path=row.get("key_path") or None,
         weight=weight,
         do_not_use=_truthy(row.get("do_not_use")),
-        window=row.get("window") or None,
+        # blank cell means always-on; an absent column inherits active_window
+        window=row.get("window"),
         local=_truthy(row.get("local")),
         strict_host_key=_truthy(row.get("strict_host_key")),
         known_hosts_file=row.get("known_hosts_file") or None,

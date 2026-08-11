@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from yuj.config import (
     DEFAULT_REMOTE_DIR,
     DEFAULT_RESULTS_GLOB,
@@ -94,3 +96,13 @@ def test_is_immutable() -> None:
     except AttributeError:
         return
     raise AssertionError("ProjectConfig should be frozen")
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(True, True), (False, False), ("true", True), ("false", False), (None, False)],
+)
+def test_courtesy_flag_reads_yaml_scalars_and_their_string_spellings(
+    value: object, expected: bool
+) -> None:
+    assert ProjectConfig.from_mapping({"courtesy": value}).courtesy is expected

@@ -28,10 +28,10 @@ class Gpu:
         return max(0, self.mem_total_mb - self.mem_used_mb)
 
     def shared_with_others(self, me: str, own_marker: str = "") -> bool:
-        """True when work that is not ours runs here.
+        """True when someone else's work runs here.
 
-        Another user always counts; with ``own_marker`` so do our own
-        processes that do not match it.
+        Any other user counts. With ``own_marker`` set, our own processes whose
+        command line lacks the marker count too, catching a stale earlier launch.
         """
         if any(u and u != me for u in self.users):
             return True

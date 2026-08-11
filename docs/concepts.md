@@ -86,9 +86,8 @@ ranking without scattering.
 
 ## Autotuning workers per host
 
-Autotuning sets how many `scatter` split jobs a host can run at once. This is useful
-for example running multiple workers of a process (say ollama) to maximise the utilisation
-of GPU rather than processing the tasks serially.
+Autotuning sets how many workers a host runs at once to maximise
+the throughout.
 
 ```yaml
 # yuj.yaml
@@ -110,16 +109,39 @@ yuj submit --autotune
 │ old-box      │ skipped │ gpus-busy  │ -     │
 ```
 
-The lowest celing is decided by:
+The worker count is the lowest of three ceilings:
 
 ```
 by_ram   = mem_available × 0.8 / ram_gb      (0.8: peak sits above steady state)
 by_cores = (cores − load1) / cores           (live load counts against you)
 by_vram  = Σ cards: min(max_per_gpu, (free_mb − gpu_reserve_mb) / vram_mb)
 ```
-Other `sizing:` keys: `max_per_gpu` (8), `gpu_reserve_mb` (1000), `require_gpu`
-(false), `own_marker` (treat your own stale runs as foreign).
-The freest machine is assigned the workers first.
+The freest card is filled first. The remaining `sizing:` keys are in the
+[configuration reference](config.md#sections).
+
+## Courtesy: sharing the GPUs
+
+Courtsey model allows us to work on a shared GPU box while
+respecting other users' jobs.
+
+```yaml
+# yuj.yaml
+courtesy: true
+concurrency: 12    # spread across whatever cards are free
+```
+
+```bash
+yuj submit --courtesy    # or turn it on for one submit
+```
+
+Every watchdog tick re-reads which cards carry someone else's compute, however
+little memory they hold, and rewrites the worker's `GPUS`/`WORKERS_PER_GPU`
+before relaunching.
+An owner starting work on card 1 gets it back on the next
+tick. When they finish, yuj takes it again. If
+every card is busy the job pauses and waits, and it also pauses when it cannot
+read the GPU state at all (a driver error looks the same as a busy card, and
+waiting is the polite reading). A host with no `nvidia-smi` runs unrestricted.
 
 ## do_not_use
 
@@ -149,11 +171,15 @@ off_window_command: "pkill -f myserver" # optional extra cleanup when pausing
 ```
 
 ```csv
-# fleet.csv — per-host window overrides the job-wide default
+# fleet.csv: a per-host window overrides the job-wide default
 username,ip,name,password,window
 alice,10.0.0.1,lab-desk,p,19:00-09:30   # only at night
 alice,10.0.0.2,server,p,                # blank = always on
 ```
+
+A blank `window` cell keeps that host running around the clock while the rest
+observe quiet hours. Drop the column entirely and every host inherits
+`active_window`.
 
 `off_window_command` runs when a host leaves its window, for tidying up anything
 your worker leaves behind (a model server, a scratch process) before handing the
@@ -161,7 +187,7 @@ machine back.
 
 ## Local host
 
-The machine yuj is lancued from is often a capable worker too. You can mark it `local` and
+The machine you launch yuj from is often a capable worker too. Mark it `local` and
 yuj runs work on it **directly, through a local shell with no SSH**:
 
 ```csv

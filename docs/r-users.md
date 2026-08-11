@@ -109,8 +109,9 @@ yuj's R extra installs these into `~/.yuj-rlib` on each host. Your worker alread
 ## Calling R from Python (pyreadr and rpy2)
 
 `yuj init --template r-python` scaffolds a job that runs R and Python together.
-For example, consider [pyreadr](https://pypi.org/project/pyreadr/) for reading
-R libraries in python and [rpy2](https://pypi.org/project/rpy2/)
+Use [pyreadr](https://pypi.org/project/pyreadr/) to read R data files from
+Python, or [rpy2](https://pypi.org/project/rpy2/) to call R itself.
+
 ```bash
 micromamba run -n yuj-rpy Rscript worker.R "$item"      # R writes work/<item>.rds
 python worker.py "$item"                                # uv venv: pyreadr reads it
@@ -119,7 +120,7 @@ micromamba run -n yuj-rpy python worker_rpy2.py "$item" # env python: rpy2 runs 
 
 ### The worked example
 
-**`environment.yaml`** — R and rpy2 from conda-forge:
+**`environment.yaml`**: R and rpy2 from conda-forge.
 ```yaml
 name: yuj-rpy
 channels: [conda-forge]
@@ -129,12 +130,12 @@ dependencies:
   - rpy2
 ```
 
-**`requirements.txt`** — pyreadr in the venv:
+**`requirements.txt`**: pyreadr in the venv.
 ```text
 pyreadr
 ```
 
-**`worker.R`** — R produces an `.rds` for the item:
+**`worker.R`** produces an `.rds` for the item.
 ```r
 args <- commandArgs(trailingOnly = TRUE)
 item <- args[[1]]
@@ -144,7 +145,7 @@ saveRDS(data.table(item = item, n_char = nchar(item)),
         file.path("work", paste0(item, ".rds")))
 ```
 
-**`worker.py`** — pyreadr reads that `.rds` with no R involved, writes the result:
+**`worker.py`** reads that `.rds` with pyreadr, no R involved, and writes the result.
 ```python
 import os, sys
 from pathlib import Path
@@ -157,8 +158,8 @@ df = pyreadr.read_r(f"work/{item}.rds")[None]  # None key = the unnamed object
 df.to_csv(out / f"{item}.csv", index=False)
 ```
 
-**`worker_rpy2.py`** — rpy2 does the same read *through R*, then calls an R function
-on the result (run it with the micromamba env's Python):
+**`worker_rpy2.py`** does the same read *through R* with rpy2, then calls an R
+function on the result. Run it with the micromamba env's Python.
 ```python
 import sys
 import rpy2.robjects as ro

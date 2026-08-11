@@ -120,6 +120,14 @@ _AutotuneOpt = Annotated[
         "instead of the job-wide 'concurrency'.",
     ),
 ]
+_CourtesyOpt = Annotated[
+    bool,
+    typer.Option(
+        "--courtesy",
+        help="Share the GPUs: each watchdog tick runs only on cards nobody "
+        "else is using, and yields them back when an owner returns.",
+    ),
+]
 _TotalOpt = Annotated[
     int | None,
     typer.Option(
@@ -356,6 +364,7 @@ def submit(
     no_canary: _NoCanaryOpt = False,
     canary_timeout: _CanaryTimeoutOpt = DEFAULT_TIMEOUT_S,
     autotune: _AutotuneOpt = False,
+    courtesy: _CourtesyOpt = False,
     timeout: Annotated[float, typer.Option(help="Per-host op timeout (s).")] = 120.0,
 ) -> None:
     """Install the self-healing watchdog + cron on every host.
@@ -373,6 +382,7 @@ def submit(
         canary=not no_canary,
         canary_timeout=canary_timeout,
         autotune=autotune,
+        courtesy=courtesy,
     )
 
 
@@ -1116,6 +1126,7 @@ def run(
     no_canary: _NoCanaryOpt = False,
     canary_timeout: _CanaryTimeoutOpt = DEFAULT_TIMEOUT_S,
     autotune: _AutotuneOpt = False,
+    courtesy: _CourtesyOpt = False,
     deploy_timeout: Annotated[
         float, typer.Option("--deploy-timeout", help="Per-host deploy timeout (s).")
     ] = 1800.0,
@@ -1139,6 +1150,7 @@ def run(
         canary=not no_canary,
         canary_timeout=canary_timeout,
         autotune=autotune,
+        courtesy=courtesy,
     )
 
 

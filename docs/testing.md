@@ -19,7 +19,7 @@ uv run pytest --cov=yuj --cov-report=term-missing
 Expected output:
 
 ```
-353 passed
+542 passed
 ```
 
 ## Verifying your own installation

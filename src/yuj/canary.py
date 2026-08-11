@@ -69,11 +69,18 @@ def _input_body(cfg: SuperviseConfig) -> str:
 def canary_script(cfg: SuperviseConfig, *, timeout_s: int) -> str:
     """Bash reproducing ``run_chunk``'s first pending iteration, timeout-bounded."""
     body = _input_body(cfg) if cfg.input_file else _batch_body(cfg)
-    placement = (
-        [f'export GPUS="{cfg.gpus}"', f'export WORKERS_PER_GPU="{cfg.workers_per_gpu}"']
-        if cfg.gpus
-        else []
-    )
+    if cfg.gpus:
+        placement = [
+            f'export GPUS="{cfg.gpus}"',
+            f'export WORKERS_PER_GPU="{cfg.workers_per_gpu}"',
+        ]
+    elif cfg.courtesy:
+        # Courtesy picks the cards on the host at run time, and the canary runs
+        # before the watchdog has chosen any. Define them empty so a work
+        # command reading $GPUS fails the canary only for real reasons.
+        placement = ['export GPUS=""', 'export WORKERS_PER_GPU=""']
+    else:
+        placement = []
     script = "\n".join(
         [
             "set -uo pipefail",

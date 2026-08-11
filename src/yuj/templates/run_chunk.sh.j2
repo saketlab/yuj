@@ -12,6 +12,15 @@ cd "$HOME/{{ remote_dir }}" || exit 1
 export GPUS="{{ gpus }}"
 export WORKERS_PER_GPU="{{ workers_per_gpu }}"
 {% endif %}
+{% if courtesy %}
+# The watchdog rewrites this each tick with the cards nobody else is on, and
+# relaunches us when the set changes. No file means no nvidia-smi: unrestricted.
+# shellcheck disable=SC1091
+if [ -f "{{ gpu_file }}" ]; then
+    . "./{{ gpu_file }}"
+    export GPUS WORKERS_PER_GPU
+fi
+{% endif %}
 {% if input_file %}
 INPUT="{{ input_file }}"
 OUTDIR="{{ output_dir }}"
@@ -26,7 +35,7 @@ run_item() {
     [ -z "$item" ] && return 0
     out="${OUTDIR}/${item}{{ output_suffix }}"
     [ -e "$out" ] && return 0
-    # shellcheck disable=SC2086  # work_command is operator-provided; quoting is their call
+    # shellcheck disable=SC2086  # work_command is a command line, expanded on purpose
     {{ work_command }} "$item"
 }
 {% if concurrency and concurrency > 1 %}

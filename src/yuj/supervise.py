@@ -54,6 +54,9 @@ class SuperviseConfig:
             relaunch, so a borrowed desktop is free for its owner during the day.
         off_window_command: Optional shell run when leaving the window, in
             addition to killing the work loop (e.g. stop a GPU server).
+        courtesy: Share the GPUs. Each watchdog tick re-reads which cards carry
+            someone else's compute and runs only on the idle ones, rewriting
+            ``GPUS``/``WORKERS_PER_GPU`` and relaunching when the set changes.
     """
 
     job: str
@@ -72,6 +75,7 @@ class SuperviseConfig:
     concurrency: int = 1
     gpus: str = ""
     workers_per_gpu: str = ""
+    courtesy: bool = False
 
     def __post_init__(self) -> None:
         if not _JOB_RE.match(self.job):
@@ -100,7 +104,7 @@ class SuperviseConfig:
     def for_host(self, host: Host) -> SuperviseConfig:
         """Return this config specialised for ``host``: window, then sizing."""
         window = self.active_window if host.window is None else (host.window or None)
-        # is None, not falsiness: a host sized to 0 workers means 0
+        # 0 workers is a real size; only None means the host was never sized
         if host.concurrency is None:
             return replace(self, active_window=window)
         return replace(
@@ -125,6 +129,11 @@ class SuperviseConfig:
     def ensure_script(self) -> str:
         """Filename of the rendered cron self-heal script."""
         return f"{self.job}.yuj-ensure.sh"
+
+    @property
+    def gpu_file(self) -> str:
+        """File the watchdog writes with the cards courtesy currently allows."""
+        return f".{self.job}.yuj-gpus"
 
     @property
     def stop_sentinel(self) -> str:
@@ -168,6 +177,8 @@ def _context(cfg: SuperviseConfig) -> dict[str, object]:
         "concurrency": cfg.concurrency,
         "gpus": cfg.gpus,
         "workers_per_gpu": cfg.workers_per_gpu,
+        "courtesy": cfg.courtesy,
+        "gpu_file": cfg.gpu_file,
         "run_script": cfg.run_script,
         "watchdog_script": cfg.watchdog_script,
         "ensure_script": cfg.ensure_script,

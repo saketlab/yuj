@@ -8,6 +8,7 @@ import pytest
 
 from yuj.exceptions import FleetError
 from yuj.fleet import Fleet, Host, load_from_csv, load_from_yaml
+from yuj.supervise import SuperviseConfig
 
 
 class TestHost:
@@ -293,3 +294,37 @@ class TestLoadFromYaml:
         yml.write_text("user: u\nmachines:\n  - just-a-string\n")
         with pytest.raises(FleetError, match="is not a mapping"):
             load_from_yaml(yml)
+
+
+_JOB_CFG = SuperviseConfig(
+    job="j",
+    remote_dir="d",
+    work_command="w",
+    results_glob="~/*",
+    active_window="19:00-09:30",
+)
+
+
+@pytest.mark.parametrize(
+    ("rows", "raw", "effective"),
+    [
+        ("username,ip,name,window\nu,1.2.3.4,always,\n", "", None),
+        ("username,ip,name\nu,1.2.3.4,inherits\n", None, "19:00-09:30"),
+        (
+            "username,ip,name,window\nu,1.2.3.4,night,22:00-06:00\n",
+            "22:00-06:00",
+            "22:00-06:00",
+        ),
+        # a row truncated before the window column must not silently opt out
+        # of quiet hours
+        ("username,ip,name,window\nu,1.2.3.4,short\n", None, "19:00-09:30"),
+    ],
+)
+def test_window_blank_cell_and_absent_column_differ(
+    tmp_path: Path, rows: str, raw: str | None, effective: str | None
+) -> None:
+    csv = tmp_path / "f.csv"
+    csv.write_text(rows)
+    host = load_from_csv(csv).hosts[0]
+    assert host.window == raw
+    assert _JOB_CFG.for_host(host).active_window == effective

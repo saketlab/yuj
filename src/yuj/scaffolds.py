@@ -11,7 +11,8 @@ _FLEET_CSV = """\
 # Columns: username,ip,name,password   (password optional; prefer key_path)
 # Optional extra columns: key_path,weight,port,do_not_use,window,local
 #   window: per-host run window "HH:MM-HH:MM" (wraps midnight), e.g. 19:00-09:30
-#   for a borrowed desktop usable only at night. Blank = always on.
+#   for a borrowed desktop usable only at night. Blank = always on; omit the
+#   column entirely to inherit active_window from yuj.yaml.
 #   local: true if this host IS the controller (runs work directly, no SSH);
 #   also auto-detected when ip is localhost/127.0.0.1.
 # KEEP THIS FILE OUT OF VERSION CONTROL; it holds credentials.
